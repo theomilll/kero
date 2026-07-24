@@ -12,7 +12,10 @@ set in the Xcode project.
 
 ## [unrelease]
 
+## [0.1.25]
+
 - Add a tab switcher (ctrl-tab) to switch between tabs
+- Add audio input support for CLIs that might need it
 
 ## [0.1.24]
 
