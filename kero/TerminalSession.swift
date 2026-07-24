@@ -28,6 +28,7 @@ final class TerminalSession: NSObject, nonisolated ObservableObject, nonisolated
     var onExited: ((TerminalSession) -> Void)?
 
     private static let persistedHistoryLineLimit = 500
+    private static let embeddedGhosttyVersion = "1.3.2-dev"
 
     private let shellPath: String
     private let launchWorkingDirectory: String
@@ -406,12 +407,13 @@ final class TerminalSession: NSObject, nonisolated ObservableObject, nonisolated
         // Kero terminals are top-level contexts; drop any nested-Claude marker
         // inherited from whatever launched the app.
         commands.append("unset CLAUDE_CODE_CHILD_SESSION")
-        commands.append("export TERM_PROGRAM=Kero")
-        if let version = Bundle.main.object(
-            forInfoDictionaryKey: "CFBundleShortVersionString"
-        ) as? String, !version.isEmpty {
-            commands.append("export TERM_PROGRAM_VERSION=\(shellQuote(version))")
-        }
+        // Many terminal tools use TERM_PROGRAM as a capability hint. Since
+        // Kero's terminal is libghostty-backed, advertise Ghostty so tools
+        // such as terminal-image-cli select the Kitty graphics protocol.
+        commands.append("export TERM_PROGRAM=ghostty")
+        commands.append(
+            "export TERM_PROGRAM_VERSION=\(shellQuote(embeddedGhosttyVersion))"
+        )
         commands.append("exec \(shellQuote(shellPath)) -l")
         // Ghostty's macOS launcher prepends `exec -l` to a shell command.
         // Make the compound setup one executable command so `exec -l` does
