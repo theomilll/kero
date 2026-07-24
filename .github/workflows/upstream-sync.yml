@@ -1,0 +1,45 @@
+name: Sync upstream
+
+on:
+  schedule:
+    - cron: "17 6 * * *"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feat/claude-chats-inbox
+          fetch-depth: 0
+
+      - name: Merge upstream/main
+        id: merge
+        run: |
+          git config user.name "upstream-sync"
+          git config user.email "actions@users.noreply.github.com"
+          git remote add upstream https://github.com/egoist/kero.git
+          git fetch upstream main
+          if [ "$(git rev-list HEAD..upstream/main --count)" = "0" ]; then
+            echo "Up to date."
+            exit 0
+          fi
+          if git merge --no-edit upstream/main; then
+            git push origin HEAD
+          else
+            exit 1
+          fi
+
+      - name: Open issue on conflict
+        if: failure()
+        run: |
+          gh issue create \
+            --title "Upstream merge conflict ($(date +%F))" \
+            --body "upstream/main conflicts with feat/claude-chats-inbox. Resolve locally: \`git fetch upstream && git merge upstream/main\`, then push." \
+            --repo "$GITHUB_REPOSITORY"
+        env:
+          GH_TOKEN: ${{ github.token }}
