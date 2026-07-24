@@ -42,6 +42,8 @@ final class TerminalManager: nonisolated ObservableObject {
     @Published var isLeftSidebarVisible = true
     @Published private(set) var isCommandPaletteVisible = false
 
+    let claudeMonitor = ClaudeActivityMonitor()
+
     /// Projects publish their own changes (session list, session selection);
     /// re-publish them so views observing the manager stay current.
     private var projectObservations: [UUID: AnyCancellable] = [:]
@@ -113,6 +115,11 @@ final class TerminalManager: nonisolated ObservableObject {
         for directory in queuedDirectories {
             newProject(directory: directory)
         }
+        claudeMonitor.bind(
+            sessionsProvider: { [weak self] in
+                self?.projects.flatMap(\.sessions) ?? []
+            }
+        )
         // Re-theme live sessions only when font, appearance, or terminal
         // theme settings change. Delivery is scheduled onto the main queue
         // because @Published emits in willSet — by then `didSet` has pushed

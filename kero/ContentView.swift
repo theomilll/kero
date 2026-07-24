@@ -60,6 +60,7 @@ struct ContentView: View {
             .background(Color(nsColor: Theme.background))
 
             RightSidebarView(manager: manager)
+            ClaudeChatsSidebarView(manager: manager)
         }
         .ignoresSafeArea()
         .overlay(alignment: .topLeading) {

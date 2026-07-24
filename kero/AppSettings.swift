@@ -80,6 +80,14 @@ final class AppSettings: nonisolated ObservableObject {
         didSet { save() }
     }
 
+    @Published var claudeChatsEnabled: Bool {
+        didSet { save() }
+    }
+
+    @Published var claudeChatSounds: Bool {
+        didSet { save() }
+    }
+
     /// Restore each terminal's previous scrollback (as static, styled text)
     /// when the app relaunches, above the freshly started shell. Off by
     /// default: opt-in, and it writes captured output to disk.
@@ -102,6 +110,8 @@ final class AppSettings: nonisolated ObservableObject {
         fontSize = Self.fontSizeRange.contains(size) ? size : Self.defaultFontSize
         fontThicken = toml["font-thicken"]?.bool ?? false
         wrapLines = toml["editor.wrap-lines"]?.bool ?? false
+        claudeChatsEnabled = toml["claude.chats-enabled"]?.bool ?? false
+        claudeChatSounds = toml["claude.chat-sounds"]?.bool ?? true
         restoreTerminalHistory = toml["terminal.restore-history"]?.bool ?? false
         applyAppearance()
         reloadThemeSelection()
@@ -143,6 +153,8 @@ final class AppSettings: nonisolated ObservableObject {
         themeDark = Theme.defaultDarkThemeName
         themeLight = Theme.defaultLightThemeName
         wrapLines = false
+        claudeChatsEnabled = false
+        claudeChatSounds = true
         restoreTerminalHistory = false
     }
 
@@ -168,6 +180,12 @@ final class AppSettings: nonisolated ObservableObject {
         }
         if wrapLines {
             lines.append("editor.wrap-lines = true")
+        }
+        if claudeChatsEnabled {
+            lines.append("claude.chats-enabled = true")
+        }
+        if !claudeChatSounds {
+            lines.append("claude.chat-sounds = false")
         }
         if restoreTerminalHistory {
             lines.append("terminal.restore-history = true")

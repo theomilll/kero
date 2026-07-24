@@ -403,6 +403,9 @@ final class TerminalSession: NSObject, nonisolated ObservableObject, nonisolated
             let path = shellQuote(replayFileURL.path)
             commands.append("if [ -r \(path) ]; then /bin/cat \(path); /bin/rm -f \(path); fi")
         }
+        // Kero terminals are top-level contexts; drop any nested-Claude marker
+        // inherited from whatever launched the app.
+        commands.append("unset CLAUDE_CODE_CHILD_SESSION")
         commands.append("export TERM_PROGRAM=Kero")
         if let version = Bundle.main.object(
             forInfoDictionaryKey: "CFBundleShortVersionString"

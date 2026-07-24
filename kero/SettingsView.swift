@@ -105,6 +105,14 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
 
+            Section("Claude Code") {
+                Toggle("Show Claude Chats sidebar", isOn: $settings.claudeChatsEnabled)
+                Text("Lists this project's Claude Code chats in a right-hand inbox while Claude is running.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                Toggle("Play chat sounds", isOn: $settings.claudeChatSounds)
+            }
+
             Section("Text Editing") {
                 Toggle("Wrap lines to editor width", isOn: $settings.wrapLines)
             }
@@ -134,6 +142,8 @@ struct SettingsView: View {
                         && settings.themeDark == Theme.defaultDarkThemeName
                         && settings.themeLight == Theme.defaultLightThemeName
                         && !settings.wrapLines
+                        && !settings.claudeChatsEnabled
+                        && settings.claudeChatSounds
                         && !settings.restoreTerminalHistory)
                 }
             }
