@@ -404,6 +404,9 @@ final class TerminalSession: NSObject, nonisolated ObservableObject, nonisolated
             let path = shellQuote(replayFileURL.path)
             commands.append("if [ -r \(path) ]; then /bin/cat \(path); /bin/rm -f \(path); fi")
         }
+        // Kero terminals are top-level contexts; drop any nested-Claude marker
+        // inherited from whatever launched the app.
+        commands.append("unset CLAUDE_CODE_CHILD_SESSION")
         // Many terminal tools use TERM_PROGRAM as a capability hint. Since
         // Kero's terminal is libghostty-backed, advertise Ghostty so tools
         // such as terminal-image-cli select the Kitty graphics protocol.

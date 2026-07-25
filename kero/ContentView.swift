@@ -9,6 +9,7 @@ struct ContentView: View {
     @ObservedObject var manager: TerminalManager
     @ObservedObject private var themeChanges = Theme.changes
     @Environment(\.colorScheme) private var colorScheme
+    @StateObject private var tabSwitcher = TabSwitcherController()
 
     var body: some View {
         HStack(spacing: 0) {
@@ -60,6 +61,7 @@ struct ContentView: View {
             .background(Color(nsColor: Theme.background))
 
             RightSidebarView(manager: manager)
+            ClaudeChatsSidebarView(manager: manager)
         }
         .ignoresSafeArea()
         .overlay(alignment: .topLeading) {
@@ -72,6 +74,16 @@ struct ContentView: View {
             if manager.isCommandPaletteVisible {
                 CommandPaletteView(manager: manager)
             }
+        }
+        .overlay {
+            if tabSwitcher.isPresented, let project = manager.selectedProject {
+                TabSwitcherOverlay(project: project, controller: tabSwitcher)
+                    .zIndex(10)
+            }
+        }
+        .background {
+            TabSwitcherEventMonitor(manager: manager, controller: tabSwitcher)
+                .frame(width: 0, height: 0)
         }
         .background(WindowChromeAccessor { manager.attach(to: $0) })
         .onChange(of: colorScheme) {
