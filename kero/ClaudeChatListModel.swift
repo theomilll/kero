@@ -113,6 +113,8 @@ final class ClaudeChatListModel: ObservableObject {
             return nil
         }
 
+        // Inbox only surfaces recent activity; older chats never appear.
+        let cutoff = Date().addingTimeInterval(-3 * 86400)
         var liveStates: [String: (modified: Date, size: Int)] = [:]
         var changedFiles: [(name: String, url: URL, modified: Date)] = []
         for fileURL in fileURLs {
@@ -122,6 +124,7 @@ final class ClaudeChatListModel: ObservableObject {
                   let values = try? fileURL.resourceValues(forKeys: keys),
                   values.isDirectory != true,
                   let modified = values.contentModificationDate,
+                  modified > cutoff,
                   let size = values.fileSize
             else {
                 continue

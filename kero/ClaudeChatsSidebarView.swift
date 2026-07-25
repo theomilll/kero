@@ -23,6 +23,7 @@ struct ClaudeChatsSidebarView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     @State private var settlingID: String?
+    @State private var confirmingID: String?
     @State private var isVisible = false
     @State private var hideTask: Task<Void, Never>?
 
@@ -176,7 +177,7 @@ struct ClaudeChatsSidebarView: View {
 
     private var chatList: some View {
         ScrollView {
-            VStack(spacing: 2) {
+            VStack(spacing: 4) {
                 ForEach(items) { item in
                     switch item {
                     case .settledHeader:
@@ -186,6 +187,7 @@ struct ClaudeChatsSidebarView: View {
                             chat: chat,
                             isWorking: isWorking(chat),
                             isSettled: isSettled(chat),
+                            isConfirming: confirmingID == chat.sessionId,
                             activate: { activate(chat) },
                             toggleSettled: { toggleSettled(chat) }
                         )
@@ -281,21 +283,34 @@ struct ClaudeChatsSidebarView: View {
 
     private func toggleSettled(_ chat: ClaudeChatSummary) {
         let project = projectKey(chat)
-        let currentlySettled = settleStore.isSettled(chat.sessionId, project: project)
+        let id = chat.sessionId
+        guard confirmingID != id else { return }
+        let currentlySettled = settleStore.isSettled(id, project: project)
         ChatSounds.play(currentlySettled ? .unsettle : .settle)
-        withAnimation(itemsAnimation) {
-            if !reduceMotion { settlingID = chat.sessionId }
-            if currentlySettled {
-                settleStore.unsettle(chat.sessionId, project: project)
-            } else {
-                settleStore.settle(chat.sessionId, project: project)
+
+        if currentlySettled || reduceMotion {
+            withAnimation(itemsAnimation) {
+                if currentlySettled {
+                    settleStore.unsettle(id, project: project)
+                } else {
+                    settleStore.settle(id, project: project)
+                }
             }
+            return
         }
-        guard !reduceMotion else { return }
+
+        // Green "okay" beat on the row, then the glide down into Settled.
+        withAnimation(.spring(response: 0.3, dampingFraction: 0.55)) { confirmingID = id }
         Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(450))
+            withAnimation(itemsAnimation) {
+                settlingID = id
+                settleStore.settle(id, project: project)
+            }
             try? await Task.sleep(for: .milliseconds(550))
             withAnimation(.easeOut(duration: 0.2)) {
-                if settlingID == chat.sessionId { settlingID = nil }
+                if settlingID == id { settlingID = nil }
+                if confirmingID == id { confirmingID = nil }
             }
         }
     }
@@ -345,10 +360,10 @@ struct ClaudeChatsSidebarView: View {
 // MARK: - Row
 
 private struct ChatRow: View {
-    @ObservedObject private var themeChanges = Theme.changes
     let chat: ClaudeChatSummary
     let isWorking: Bool
     let isSettled: Bool
+    let isConfirming: Bool
     let activate: () -> Void
     let toggleSettled: () -> Void
 
@@ -357,10 +372,10 @@ private struct ChatRow: View {
     var body: some View {
         Button(action: activate) {
             HStack(spacing: 8) {
-                leadingGlyph.frame(width: 14)
-                VStack(alignment: .leading, spacing: 1) {
+                leadingGlyph.frame(width: 16)
+                VStack(alignment: .leading, spacing: 2) {
                     Text(chat.title)
-                        .font(.system(size: 12))
+                        .font(.system(size: 13))
                         .foregroundStyle(isSettled ? .tertiary : isWorking ? .primary : .secondary)
                         .lineLimit(1)
                     subtitle
@@ -369,27 +384,32 @@ private struct ChatRow: View {
                 if isHovering {
                     Button(action: toggleSettled) {
                         Image(systemName: isSettled ? "arrow.uturn.up" : "checkmark")
-                            .font(.system(size: 9, weight: .bold))
+                            .font(.system(size: 10, weight: .bold))
                             .foregroundStyle(.secondary)
-                            .frame(width: 16, height: 16)
+                            .frame(width: 18, height: 18)
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .tooltip(isSettled ? "Unsettle" : "Settle", alignment: .trailing)
                 } else {
                     Text(chat.modified.compactRelative)
-                        .font(.system(size: 10))
+                        .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }
             }
             .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            .padding(.vertical, 10)
             .contentShape(RoundedRectangle(cornerRadius: 6))
         }
         .buttonStyle(.plain)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(isWorking ? Color.primary.opacity(0.06) : isHovering ? Color.primary.opacity(0.04) : .clear)
+                .fill(
+                    isConfirming ? Color.green.opacity(0.12)
+                        : isWorking ? Color.primary.opacity(0.06)
+                        : isHovering ? Color.primary.opacity(0.04)
+                        : .clear
+                )
         )
         .onHover { isHovering = $0 }
         .opacity(isSettled ? 0.7 : 1)
@@ -397,16 +417,21 @@ private struct ChatRow: View {
 
     @ViewBuilder
     private var leadingGlyph: some View {
-        if isWorking {
+        if isConfirming {
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(Color(nsColor: .systemGreen))
+                .transition(.scale(scale: 0.3).combined(with: .opacity))
+        } else if isWorking {
             WorkingDot()
         } else if isSettled {
             Image(systemName: "checkmark")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-        } else {
-            Image(systemName: "bubble.left")
                 .font(.system(size: 11))
-                .foregroundStyle(.secondary)
+                .foregroundStyle(Color(nsColor: .systemGreen))
+        } else {
+            Circle()
+                .fill(Color(nsColor: .systemYellow))
+                .frame(width: 7, height: 7)
         }
     }
 
@@ -416,20 +441,20 @@ private struct ChatRow: View {
             HStack(spacing: 4) {
                 if isWorking {
                     Text("Working")
-                        .font(.system(size: 10, weight: .medium))
-                        .foregroundStyle(Color(nsColor: Theme.accent))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color(nsColor: .systemBlue))
                     if chat.gitBranch != nil {
                         Text("·")
-                            .font(.system(size: 10))
+                            .font(.system(size: 11))
                             .foregroundStyle(.tertiary)
                     }
                 }
                 if let branch = chat.gitBranch {
                     Image(systemName: "arrow.triangle.branch")
-                        .font(.system(size: 8))
+                        .font(.system(size: 9))
                         .foregroundStyle(.tertiary)
                     Text(branch)
-                        .font(.system(size: 10))
+                        .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
@@ -441,18 +466,17 @@ private struct ChatRow: View {
 // MARK: - Working indicator
 
 private struct WorkingDot: View {
-    @ObservedObject private var themeChanges = Theme.changes
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var pulsing = false
 
     var body: some View {
         Circle()
-            .fill(Color(nsColor: Theme.accent))
-            .frame(width: 6, height: 6)
+            .fill(Color(nsColor: .systemBlue))
+            .frame(width: 7, height: 7)
             .background {
                 if !reduceMotion {
                     Circle()
-                        .stroke(Color(nsColor: Theme.accent), lineWidth: 1.5)
+                        .stroke(Color(nsColor: .systemBlue), lineWidth: 1.5)
                         .scaleEffect(pulsing ? 2.6 : 1)
                         .opacity(pulsing ? 0 : 0.55)
                 }
