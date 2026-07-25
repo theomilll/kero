@@ -18,6 +18,7 @@ struct ClaudeChatsSidebarView: View {
     @ObservedObject private var themeChanges = Theme.changes
     @ObservedObject private var settleStore = ClaudeChatSettleStore.shared
     @StateObject private var model = ClaudeChatListModel()
+    @StateObject private var gitModel = GitStatusModel()
     @AppStorage("claudeChatsSidebarWidth") private var width: Double = 250
     @AppStorage("claudeChatsSettledCollapsed") private var settledCollapsed = false
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
@@ -56,6 +57,7 @@ struct ClaudeChatsSidebarView: View {
                 VStack(spacing: 0) {
                     header
                     if model.chats.isEmpty { emptyState } else { chatList }
+                    if gitModel.isRepo { branchFooter }
                 }
                 .frame(width: width)
                 .background(Color(nsColor: Theme.sidebar))
@@ -118,6 +120,7 @@ struct ClaudeChatsSidebarView: View {
 
     private func sync() {
         guard isVisible, let cwd = panelCwd else { return }
+        gitModel.sync(root: cwd)
         model.sync(cwd: cwd, settleStore: settleStore) {
             if NSApp.isActive, isVisible, model.hasLoadedOnce {
                 ChatSounds.play(.newChat)
@@ -155,6 +158,54 @@ struct ClaudeChatsSidebarView: View {
         .padding(.horizontal, 12)
         .padding(.top, 12)
         .padding(.bottom, 8)
+    }
+
+    // MARK: - Branch footer
+
+    private var branchFooter: some View {
+        Menu {
+            ForEach(gitModel.branches, id: \.self) { branch in
+                Button {
+                    gitModel.switchBranch(to: branch)
+                } label: {
+                    if branch == gitModel.branch {
+                        Label(branch, systemImage: "checkmark")
+                    } else {
+                        Text(branch)
+                    }
+                }
+                .disabled(branch == gitModel.branch || gitModel.isBusy)
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Image(systemName: "arrow.triangle.branch")
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(Color(nsColor: Theme.accent))
+                Text(gitModel.branch ?? "Detached HEAD")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                Spacer(minLength: 4)
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .menuStyle(.button)
+        .menuIndicator(.hidden)
+        .disabled(gitModel.isBusy)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .overlay(alignment: .top) {
+            Rectangle()
+                .fill(Color(nsColor: Theme.divider))
+                .frame(height: 1)
+        }
+        .help("Switch Branch")
+        .accessibilityLabel("Current branch, \(gitModel.branch ?? "detached HEAD")")
     }
 
     // MARK: - List
