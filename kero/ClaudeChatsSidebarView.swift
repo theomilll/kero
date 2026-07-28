@@ -17,6 +17,7 @@ struct ClaudeChatsSidebarView: View {
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var themeChanges = Theme.changes
     @ObservedObject private var settleStore = ClaudeChatSettleStore.shared
+    @ObservedObject private var mergeStore = ClaudeChatMergeStore.shared
     @StateObject private var model = ClaudeChatListModel()
     @StateObject private var gitModel = GitStatusModel()
     @AppStorage("claudeChatsSidebarWidth") private var width: Double = 250
@@ -25,6 +26,7 @@ struct ClaudeChatsSidebarView: View {
 
     @State private var settlingID: String?
     @State private var confirmingID: String?
+    @State private var celebratingID: String?
     @State private var isVisible = false
     @State private var hideTask: Task<Void, Never>?
 
@@ -121,11 +123,17 @@ struct ClaudeChatsSidebarView: View {
     private func sync() {
         guard isVisible, let cwd = panelCwd else { return }
         gitModel.sync(root: cwd)
-        model.sync(cwd: cwd, settleStore: settleStore) {
-            if NSApp.isActive, isVisible, model.hasLoadedOnce {
-                ChatSounds.play(.newChat)
-            }
-        }
+        model.sync(
+            cwd: cwd,
+            settleStore: settleStore,
+            mergeStore: mergeStore,
+            onNewChat: {
+                if NSApp.isActive, isVisible, model.hasLoadedOnce {
+                    ChatSounds.play(.newChat)
+                }
+            },
+            onPRMerged: handleMerge
+        )
     }
 
     // MARK: - Header
@@ -239,6 +247,9 @@ struct ClaudeChatsSidebarView: View {
                             isWorking: isWorking(chat),
                             isSettled: isSettled(chat),
                             isConfirming: confirmingID == chat.sessionId,
+                            isCelebrating: celebratingID == chat.sessionId,
+                            mergedPRNumber: mergeRecord(chat)?.prNumber,
+                            isMerged: mergeRecord(chat) != nil,
                             activate: { activate(chat) },
                             toggleSettled: { toggleSettled(chat) }
                         )
@@ -323,6 +334,10 @@ struct ClaudeChatsSidebarView: View {
         monitor.attachment(forChat: chat.sessionId) != nil
     }
 
+    private func mergeRecord(_ chat: ClaudeChatSummary) -> ClaudeChatMergeRecord? {
+        mergeStore.record(chat.sessionId, project: projectKey(chat))
+    }
+
     private var workingCount: Int { model.chats.filter(isWorking).count }
     private var settledCount: Int { model.chats.filter(isSettled).count }
 
@@ -354,15 +369,68 @@ struct ClaudeChatsSidebarView: View {
         withAnimation(.spring(response: 0.3, dampingFraction: 0.55)) { confirmingID = id }
         Task { @MainActor in
             try? await Task.sleep(for: .milliseconds(450))
+            await glideToSettled(id: id, project: project)
+        }
+    }
+
+    /// The shared lift-and-glide into the Settled section, ending whatever
+    /// beat (green confirm or purple celebration) preceded it.
+    private func glideToSettled(id: String, project: String) async {
+        withAnimation(itemsAnimation) {
+            settlingID = id
+            settleStore.settle(id, project: project)
+        }
+        try? await Task.sleep(for: .milliseconds(550))
+        withAnimation(.easeOut(duration: 0.2)) {
+            if settlingID == id { settlingID = nil }
+            if confirmingID == id { confirmingID = nil }
+            if celebratingID == id { celebratingID = nil }
+        }
+    }
+
+    // MARK: - PR merged
+
+    /// Fired once per newly detected in-chat `gh pr merge`. A fresh merge
+    /// gets the full celebration before auto-settling; one discovered late
+    /// (catching up on a transcript after the panel or app was closed) is
+    /// settled quietly — celebrating minutes-old news feels wrong.
+    private func handleMerge(_ sessionId: String, _ merge: DetectedMerge) {
+        guard let chat = model.chats.first(where: { $0.sessionId == sessionId }) else {
+            return
+        }
+        let project = projectKey(chat)
+        guard !settleStore.isSettled(sessionId, project: project) else { return }
+
+        let isFresh = merge.timestamp.map { Date().timeIntervalSince($0) < 120 } ?? false
+        guard isFresh else {
             withAnimation(itemsAnimation) {
-                settlingID = id
-                settleStore.settle(id, project: project)
+                settleStore.settle(sessionId, project: project)
             }
-            try? await Task.sleep(for: .milliseconds(550))
-            withAnimation(.easeOut(duration: 0.2)) {
-                if settlingID == id { settlingID = nil }
-                if confirmingID == id { confirmingID = nil }
+            return
+        }
+
+        if NSApp.isActive, isVisible {
+            ChatSounds.play(.prMerged)
+        }
+        if reduceMotion {
+            celebratingID = sessionId
+            Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(450))
+                withAnimation(itemsAnimation) {
+                    settleStore.settle(sessionId, project: project)
+                }
+                if celebratingID == sessionId { celebratingID = nil }
             }
+            return
+        }
+
+        // Purple boom on the row, held long enough to land, then the glide.
+        withAnimation(.spring(response: 0.35, dampingFraction: 0.5)) {
+            celebratingID = sessionId
+        }
+        Task { @MainActor in
+            try? await Task.sleep(for: .milliseconds(1000))
+            await glideToSettled(id: sessionId, project: project)
         }
     }
 
@@ -382,7 +450,7 @@ struct ClaudeChatsSidebarView: View {
         // 2. Reuse an idle-at-prompt terminal in the same project directory.
         if let idle = project.sessions.first(where: { session in
             guard let pid = session.shellPid else { return false }
-            return session.terminalView.foregroundPid == pid
+            return session.surface.foregroundPid == pid
                 && ClaudeProjectDirectory.encoded(for: session.currentDirectoryPath) == targetEncoded
         }) {
             manager.revealSession(idle)
@@ -415,9 +483,13 @@ private struct ChatRow: View {
     let isWorking: Bool
     let isSettled: Bool
     let isConfirming: Bool
+    let isCelebrating: Bool
+    let mergedPRNumber: Int?
+    let isMerged: Bool
     let activate: () -> Void
     let toggleSettled: () -> Void
 
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var isHovering = false
 
     var body: some View {
@@ -456,12 +528,19 @@ private struct ChatRow: View {
         .background(
             RoundedRectangle(cornerRadius: 6)
                 .fill(
-                    isConfirming ? Color.green.opacity(0.12)
+                    isCelebrating ? mergePurple.opacity(0.14)
+                        : isConfirming ? Color.green.opacity(0.12)
                         : isWorking ? Color.primary.opacity(0.06)
                         : isHovering ? Color.primary.opacity(0.04)
                         : .clear
                 )
         )
+        .overlay {
+            if isCelebrating, !reduceMotion {
+                MergeGlowRing()
+                MergeBurstView()
+            }
+        }
         .onHover { isHovering = $0 }
         .opacity(isSettled ? 0.7 : 1)
     }
@@ -473,6 +552,18 @@ private struct ChatRow: View {
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(Color(nsColor: .systemGreen))
                 .transition(.scale(scale: 0.3).combined(with: .opacity))
+        } else if isCelebrating {
+            Image(systemName: "arrow.triangle.merge")
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(mergePurple)
+                .symbolEffect(.bounce, value: isCelebrating)
+                .transition(.scale(scale: 0.2).combined(with: .opacity))
+        } else if isMerged {
+            // Merged trumps working and settled: the purple glyph is what
+            // distinguishes a merged chat wherever it sits.
+            Image(systemName: "arrow.triangle.merge")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(mergePurple)
         } else if isWorking {
             WorkingDot()
         } else if isSettled {
@@ -488,9 +579,20 @@ private struct ChatRow: View {
 
     @ViewBuilder
     private var subtitle: some View {
-        if isWorking || chat.gitBranch != nil {
+        if isMerged || isWorking || chat.gitBranch != nil {
             HStack(spacing: 4) {
-                if isWorking {
+                if isMerged {
+                    // A merged PR is the chat's terminal state; it outranks
+                    // "Working" even if claude is still running.
+                    Text("PR merged" + (mergedPRNumber.map { " #\($0)" } ?? ""))
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(mergePurple)
+                    if chat.gitBranch != nil {
+                        Text("·")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.tertiary)
+                    }
+                } else if isWorking {
                     Text("Working")
                         .font(.system(size: 11, weight: .medium))
                         .foregroundStyle(Color(nsColor: .systemBlue))
@@ -541,10 +643,125 @@ private struct WorkingDot: View {
     }
 }
 
+// MARK: - PR merged celebration
+
+/// GitHub's merge purple, shared by the glyph, subtitle, tint, and burst.
+private let mergePurple = Color(red: 0x82 / 255, green: 0x50 / 255, blue: 0xDF / 255)
+private let mergePurpleLight = Color(red: 0xA3 / 255, green: 0x71 / 255, blue: 0xF7 / 255)
+
+/// One-shot ring that swells off the row edge as the celebration lands —
+/// the non-repeating cousin of `WorkingDot`'s pulse.
+private struct MergeGlowRing: View {
+    @State private var expanded = false
+
+    var body: some View {
+        RoundedRectangle(cornerRadius: 6)
+            .stroke(mergePurple, lineWidth: 1.5)
+            .scaleEffect(expanded ? 1.04 : 1)
+            .opacity(expanded ? 0 : 0.5)
+            .allowsHitTesting(false)
+            .onAppear {
+                withAnimation(.easeOut(duration: 0.6)) { expanded = true }
+            }
+    }
+}
+
+/// A short particle burst out of the leading glyph: purple and green motes
+/// with a few white sparkles, under simple ballistic motion. Self-finishes
+/// within a second; the row removes it when the celebration state clears.
+private struct MergeBurstView: View {
+    private struct Particle {
+        let velocity: CGVector
+        let lifetime: Double
+        let size: Double
+        let color: Color
+        let isSparkle: Bool
+    }
+
+    private static let gravity = 220.0
+    private let particles: [Particle]
+    private let start = Date()
+
+    init() {
+        particles = (0..<26).map { index in
+            let angle = Double.random(in: 0..<(2 * .pi))
+            let speed = Double.random(in: 60...160)
+            let isSparkle = index % 7 == 0
+            return Particle(
+                // Radial spray with an upward kick so the burst blooms
+                // before gravity pulls it back through the row.
+                velocity: CGVector(
+                    dx: cos(angle) * speed,
+                    dy: sin(angle) * speed - 40
+                ),
+                lifetime: Double.random(in: 0.7...0.95),
+                size: Double.random(in: 2...3.5),
+                color: isSparkle
+                    ? .white
+                    : [mergePurple, mergePurpleLight, Color(nsColor: .systemGreen)]
+                        .randomElement()!,
+                isSparkle: isSparkle
+            )
+        }
+    }
+
+    var body: some View {
+        TimelineView(.animation) { timeline in
+            Canvas { context, size in
+                let t = timeline.date.timeIntervalSince(start)
+                // The leading glyph's center: 8pt row padding + half its
+                // 16pt slot.
+                let origin = CGPoint(x: 16, y: size.height / 2)
+                for particle in particles {
+                    let life = t / particle.lifetime
+                    guard life >= 0, life < 1 else { continue }
+                    let position = CGPoint(
+                        x: origin.x + particle.velocity.dx * t,
+                        y: origin.y + particle.velocity.dy * t
+                            + Self.gravity / 2 * t * t
+                    )
+                    let alpha = pow(1 - life, 2)
+                    let span = particle.size * (1 - life) + 0.5
+                    if particle.isSparkle {
+                        // Tiny plus shape: two crossed bars.
+                        let paint = GraphicsContext.Shading.color(
+                            particle.color.opacity(alpha)
+                        )
+                        context.fill(
+                            Path(CGRect(
+                                x: position.x - span, y: position.y - 0.5,
+                                width: span * 2, height: 1
+                            )),
+                            with: paint
+                        )
+                        context.fill(
+                            Path(CGRect(
+                                x: position.x - 0.5, y: position.y - span,
+                                width: 1, height: span * 2
+                            )),
+                            with: paint
+                        )
+                    } else {
+                        context.fill(
+                            Path(ellipseIn: CGRect(
+                                x: position.x - span / 2,
+                                y: position.y - span / 2,
+                                width: span, height: span
+                            )),
+                            with: .color(particle.color.opacity(alpha))
+                        )
+                    }
+                }
+            }
+        }
+        .allowsHitTesting(false)
+    }
+}
+
 // MARK: - Sounds
 
 enum ChatSounds {
-    enum Cue { case settle, unsettle, newChat }
+    enum Cue { case settle, unsettle, newChat, prMerged }
 
     static func play(_ cue: Cue) {
         guard AppSettings.shared.claudeChatSounds else { return }
@@ -552,6 +769,7 @@ enum ChatSounds {
         case .settle: ("Pop", 0.4)
         case .unsettle: ("Tink", 0.3)
         case .newChat: ("Purr", 0.25)
+        case .prMerged: ("Glass", 0.5)
         }
         guard let sound = NSSound(named: name) else { return }
         sound.volume = volume

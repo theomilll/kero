@@ -11,6 +11,8 @@ import SwiftUI
 struct SettingsView: View {
     @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var updater = Updater.shared
+    @State private var relaunchError = ""
+    @State private var isShowingRelaunchError = false
 
     /// Installed fixed-pitch families (bundled default first).
     private let families = TerminalFont.selectableFamilies()
@@ -29,6 +31,24 @@ struct SettingsView: View {
                     Text("Theme")
                     Spacer()
                     ThemePicker(selection: $settings.theme)
+                }
+
+                Picker("Language", selection: $settings.language) {
+                    ForEach(AppLanguage.allCases) { language in
+                        Text(verbatim: language.title).tag(language)
+                    }
+                }
+
+                if settings.languageRequiresRelaunch {
+                    HStack(alignment: .firstTextBaseline) {
+                        Text("Relaunch Kero to apply the language change.")
+                            .font(.callout)
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Relaunch Kero") {
+                            relaunch()
+                        }
+                    }
                 }
             }
 
@@ -76,19 +96,38 @@ struct SettingsView: View {
                     )
                     .labelsHidden()
                 }
+            }
 
-                Toggle("Thicken font strokes", isOn: $settings.fontThicken)
-                Text("Renders terminal text with slightly heavier strokes, like classic macOS font smoothing.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
+            Section("Sidebar") {
+                HStack {
+                    Text("Font size")
+                    Slider(
+                        value: $settings.sidebarFontSize,
+                        in: AppSettings.sidebarFontSizeRange,
+                        step: 1
+                    )
+                    .accessibilityLabel("Sidebar font size")
+                    Text("\(Int(settings.sidebarFontSize)) pt")
+                        .monospacedDigit()
+                        .foregroundStyle(.secondary)
+                        .frame(width: 40, alignment: .trailing)
+                    Stepper(
+                        "",
+                        value: $settings.sidebarFontSize,
+                        in: AppSettings.sidebarFontSizeRange,
+                        step: 1
+                    )
+                    .labelsHidden()
+                    .accessibilityLabel("Sidebar font size")
+                }
             }
 
             Section("Preview") {
                 // Exercises regular/bold plus Nerd Font icon fallback.
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("kero ❯ echo \"the quick brown fox\" 0O 1lI")
-                    Text("\u{E0A0} main \u{E0B0} ~/dev/kero \u{E711} \u{F024B} \u{F0A7D}")
-                    Text("bold — permission denied (os error 13)")
+                    Text(verbatim: "kero ❯ echo \"the quick brown fox\" 0O 1lI")
+                    Text(verbatim: "\u{E0A0} main \u{E0B0} ~/dev/kero \u{E711} \u{F024B} \u{F0A7D}")
+                    Text(verbatim: "bold — permission denied (os error 13)")
                         .bold()
                 }
                 .font(Font(previewFont))
@@ -96,6 +135,35 @@ struct SettingsView: View {
             }
 
             Section("Terminal") {
+                // Only show this once there is a real choice. `selectable`
+                // omits backends this build cannot create, so every tab here
+                // takes effect instead of silently producing a dead pane.
+                if TerminalBackend.selectable.count > 1 {
+                    HStack(alignment: .top) {
+                        Text("Backend")
+                        Spacer()
+                        VStack(alignment: .leading, spacing: 8) {
+                            TerminalBackendPicker(selection: $settings.terminalBackend)
+                            Text("Changes apply to new terminals.")
+                                .font(.callout)
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                }
+
+                Toggle("Thicken font strokes", isOn: $settings.fontThicken)
+                Text("Renders terminal text with slightly heavier strokes, like classic macOS font smoothing.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
+                Toggle(
+                    "Use Option as Alt/Meta",
+                    isOn: $settings.macosOptionAsAlt
+                )
+                Text("Sends Option-key combinations to terminal programs as Meta shortcuts instead of macOS text input.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+
                 Toggle(
                     "Restore session history on relaunch",
                     isOn: $settings.restoreTerminalHistory
@@ -137,32 +205,62 @@ struct SettingsView: View {
                     }
                     .disabled(settings.fontFamily.isEmpty
                         && settings.fontSize == AppSettings.defaultFontSize
+                        && settings.sidebarFontSize == AppSettings.defaultSidebarFontSize
                         && !settings.fontThicken
+                        && !settings.macosOptionAsAlt
+                        && settings.language == .system
                         && settings.theme == .system
                         && settings.themeDark == Theme.defaultDarkThemeName
                         && settings.themeLight == Theme.defaultLightThemeName
                         && !settings.wrapLines
                         && !settings.claudeChatsEnabled
                         && settings.claudeChatSounds
-                        && !settings.restoreTerminalHistory)
+                        && !settings.restoreTerminalHistory
+                        && settings.terminalBackend == .fallback)
                 }
             }
         }
         .formStyle(.grouped)
         .frame(width: 440)
+        .alert(
+            "Couldn’t Relaunch Kero",
+            isPresented: $isShowingRelaunchError
+        ) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text(verbatim: relaunchError)
+        }
     }
 
     private var previewFont: NSFont {
         TerminalFont.resolve(family: settings.fontFamily, size: CGFloat(settings.fontSize))
     }
 
-    /// Kero's built-in Default theme first, then every bundled theme, split
-    /// by background luminance so each picker offers themes that suit its
-    /// appearance slot.
-    private static let darkThemeNames = [Theme.defaultDarkThemeName]
-        + GhosttyThemeCatalog.allThemes.filter(\.isDark).map(\.name)
-    private static let lightThemeNames = [Theme.defaultLightThemeName]
-        + GhosttyThemeCatalog.allThemes.filter { !$0.isDark }.map(\.name)
+    private func relaunch() {
+        TerminalManager.saveForRelaunch()
+
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.createsNewApplicationInstance = true
+        configuration.activates = true
+        NSWorkspace.shared.openApplication(
+            at: Bundle.main.bundleURL,
+            configuration: configuration
+        ) { _, error in
+            DispatchQueue.main.async {
+                if let error {
+                    relaunchError = error.localizedDescription
+                    isShowingRelaunchError = true
+                } else {
+                    NSApp.terminate(nil)
+                }
+            }
+        }
+    }
+
+    /// The compact catalog of popular themes shared by both terminal backends,
+    /// split by the appearance slot they suit.
+    private static let darkThemeNames = Theme.commonDarkThemes.map(\.name)
+    private static let lightThemeNames = Theme.commonLightThemes.map(\.name)
 }
 
 /// Sizes its sole child to the child's ideal height, capped at `maxHeight`.
@@ -244,6 +342,97 @@ private struct ThemeOption: View {
         .buttonStyle(.plain)
         .accessibilityLabel(theme.title)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
+/// Keeps every available engine visible, following the same selection model
+/// as the Appearance tabs above while leaving room for capability differences.
+private struct TerminalBackendPicker: View {
+    @Binding var selection: TerminalBackend
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 6) {
+            ForEach(TerminalBackend.selectable) { backend in
+                TerminalBackendOption(
+                    backend: backend,
+                    isSelected: selection == backend,
+                    select: { selection = backend }
+                )
+            }
+        }
+        .frame(maxWidth: 310)
+    }
+}
+
+private struct TerminalBackendOption: View {
+    let backend: TerminalBackend
+    let isSelected: Bool
+    let select: () -> Void
+
+    var body: some View {
+        Button(action: select) {
+            VStack(alignment: .leading, spacing: 4) {
+                HStack(spacing: 6) {
+                    Image(backend.settingsIconName)
+                        .resizable()
+                        .scaledToFit()
+                        .frame(width: 24, height: 24)
+                    Text(backend.displayName)
+                        .font(.callout)
+                        .foregroundStyle(.primary)
+                }
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(backend.settingsHighlights) { highlight in
+                        TerminalBackendHighlightRow(highlight: highlight)
+                    }
+                }
+                .padding(.top, 2)
+            }
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+            .padding(8)
+            .background(
+                RoundedRectangle(cornerRadius: 10)
+                    .fill(Color.accentColor.opacity(isSelected ? 0.15 : 0))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(
+                        isSelected ? Color.accentColor : Color.primary.opacity(0.12),
+                        lineWidth: isSelected ? 2 : 0.5
+                    )
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(backend.displayName)
+        .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)
+    }
+}
+
+private struct TerminalBackendHighlightRow: View {
+    let highlight: TerminalBackendHighlight
+
+    var body: some View {
+        let availability = highlight.isPositive
+            ? String(localized: "Available", comment: "Accessibility description for a supported terminal feature.")
+            : String(localized: "Unavailable", comment: "Accessibility description for an unsupported terminal feature.")
+        HStack(spacing: 4) {
+            Image(systemName: highlight.isPositive
+                ? "checkmark.circle.fill"
+                : "exclamationmark.circle.fill")
+                .foregroundStyle(highlight.isPositive ? Color.green : Color.orange)
+            Text(highlight.title)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+        }
+        .font(.caption)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(
+            String(
+                localized: "\(availability): \(highlight.title)",
+                comment: "Accessibility label for a terminal feature and whether it is available."
+            )
+        )
     }
 }
 

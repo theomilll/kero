@@ -21,10 +21,18 @@ final class TabSwitcherController: ObservableObject {
     private var previewTask: Task<Void, Never>?
     private var isConsumingTabKey = false
     private var isConsumingEscapeKey = false
+    private var acceptsPointerHighlight = false
 
     /// Returns nil for an event consumed by the switcher.
     func handle(_ event: NSEvent, manager: TerminalManager) -> NSEvent? {
         switch event.type {
+        case .mouseMoved:
+            // AppKit sends mouseEntered when a tracking area is created under
+            // a stationary pointer. Wait for actual pointer movement before
+            // allowing hover to replace the keyboard-selected card.
+            acceptsPointerHighlight = isPresented
+            return event
+
         case .flagsChanged:
             guard isPresented, !event.modifierFlags.contains(.control) else {
                 return event
@@ -98,6 +106,7 @@ final class TabSwitcherController: ObservableObject {
         highlightedTabID = nil
         originalTabID = nil
         activeProject = nil
+        acceptsPointerHighlight = false
     }
 
     func select(_ tabID: UUID, in project: Project) {
@@ -107,8 +116,10 @@ final class TabSwitcherController: ObservableObject {
     }
 
     func highlight(_ tabID: UUID, in project: Project) {
-        guard isPresented,
+        guard acceptsPointerHighlight,
+              isPresented,
               activeProject === project,
+              highlightedTabID != tabID,
               project.tabs.contains(where: { $0.id == tabID })
         else { return }
         highlightedTabID = tabID
@@ -125,6 +136,7 @@ final class TabSwitcherController: ObservableObject {
             activeProject = project
             originalTabID = selectedID
             highlightedTabID = selectedID
+            acceptsPointerHighlight = false
             let validContentIDs = Set(project.tabs.flatMap(\.allContents).map(\.id))
             terminalPreviews = terminalPreviews.filter {
                 validContentIDs.contains($0.key)
@@ -152,9 +164,9 @@ final class TabSwitcherController: ObservableObject {
     }
 
     /// Terminal surfaces are Metal-backed, so AppKit bitmap caching produces
-    /// black cards. Ask Ghostty for plain visible output instead, recapturing
-    /// every terminal once when the switcher opens. Non-terminal cards are
-    /// rendered directly from their models.
+    /// black cards. Ask the backend for plain visible output instead,
+    /// recapturing every terminal once when the switcher opens. Non-terminal
+    /// cards are rendered directly from their models.
     private func refreshTerminalPreviews(in project: Project) {
         previewTask?.cancel()
         let sessions = project.tabs.flatMap(\.sessions)
@@ -167,7 +179,7 @@ final class TabSwitcherController: ObservableObject {
             for session in sessions {
                 guard !Task.isCancelled, let self, self.isPresented else { return }
                 if let preview = TerminalHistorySerializer.previewText(
-                    from: session.terminalView,
+                    from: session.surface,
                     maxLines: 28,
                     maxColumns: 140
                 ), self.terminalPreviews[session.id] != preview {
@@ -219,7 +231,7 @@ final class TabSwitcherMonitorView: NSView {
         guard let window else { return }
 
         eventMonitor = NSEvent.addLocalMonitorForEvents(
-            matching: [.keyDown, .keyUp, .flagsChanged]
+            matching: [.keyDown, .keyUp, .flagsChanged, .mouseMoved]
         ) { [weak self, weak window] event in
             // AppKit invokes local monitors synchronously on the event thread
             // (the main thread). Wrap the non-Sendable NSEvent only across
@@ -479,10 +491,10 @@ private struct TabSwitcherCard: View {
                 }
 
             HStack(spacing: 8) {
-                Image(systemName: tab.focusedContent?.systemImage ?? "rectangle")
+                titleIcon
                     .font(.system(size: 16, weight: .semibold))
                     .foregroundStyle(.primary.opacity(isHighlighted ? 1 : 0.82))
-                Text(tab.displayTitle ?? "Tab \(index + 1)")
+                Text(verbatim: tab.displayTitle ?? String(localized: "Tab \(index + 1)"))
                     .font(.system(
                         size: 14,
                         weight: .medium
@@ -524,11 +536,25 @@ private struct TabSwitcherCard: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Tab \(index + 1), \(tab.displayTitle ?? "Untitled")")
+        .accessibilityLabel(
+            String(
+                localized: "Tab \(index + 1), \(tab.displayTitle ?? String(localized: "Untitled"))",
+                comment: "Accessibility label for a tab. The placeholders are its position and title."
+            )
+        )
         .accessibilityValue(isHighlighted ? "Selected on release" : "")
         .accessibilityAddTraits(.isButton)
         .accessibilityAddTraits(isHighlighted ? .isSelected : [])
         .accessibilityAction { select() }
+    }
+
+    @ViewBuilder
+    private var titleIcon: some View {
+        if case .browser(let browser) = tab.focusedContent {
+            BrowserFaviconView(browser: browser, size: 16)
+        } else {
+            Image(systemName: tab.focusedContent?.systemImage ?? "rectangle")
+        }
     }
 
     private var highlightedBackground: Color {
@@ -570,6 +596,7 @@ private final class TabSwitcherInteractionNSView: NSView {
             rect: .zero,
             options: [
                 .mouseEnteredAndExited,
+                .mouseMoved,
                 .activeInKeyWindow,
                 .inVisibleRect,
                 .enabledDuringMouseDrag,
@@ -579,6 +606,10 @@ private final class TabSwitcherInteractionNSView: NSView {
     }
 
     override func mouseEntered(with event: NSEvent) {
+        onEnter?()
+    }
+
+    override func mouseMoved(with event: NSEvent) {
         onEnter?()
     }
 
@@ -662,6 +693,8 @@ private struct TabPaneThumbnail: View {
                 terminal(session)
             case .file(let file):
                 filePreview(file)
+            case .browser(let browser):
+                browserPreview(browser)
             case .diff(let diff):
                 diffPreview(diff)
             }
@@ -745,6 +778,10 @@ private struct TabPaneThumbnail: View {
         .padding(4)
     }
 
+    private func browserPreview(_ browser: BrowserTab) -> some View {
+        BrowserTabSwitcherPreview(browser: browser)
+    }
+
     private var terminalForeground: NSColor {
         Theme.terminal(dark: colorScheme == .dark).foregroundNSColor
     }
@@ -772,5 +809,35 @@ private struct TabPaneThumbnail: View {
             .prefix(26)
             .map { String($0.prefix(120)) }
         return lines.joined(separator: "\n")
+    }
+}
+
+private struct BrowserTabSwitcherPreview: View {
+    @ObservedObject var browser: BrowserTab
+
+    var body: some View {
+        VStack(spacing: 5) {
+            BrowserFaviconView(
+                browser: browser,
+                size: 18,
+                fallbackSystemImage: browser.isLoading
+                    ? "globe.americas.fill"
+                    : "globe"
+            )
+            .font(.system(size: 17, weight: .light))
+            .foregroundStyle(Color(nsColor: Theme.accent))
+            Text(browser.title)
+                .font(.system(size: 8, weight: .medium))
+                .lineLimit(1)
+            if !browser.urlString.isEmpty {
+                Text(browser.urlString)
+                    .font(.system(size: 5.5))
+                    .foregroundStyle(.tertiary)
+                    .lineLimit(2)
+                    .truncationMode(.middle)
+                    .multilineTextAlignment(.center)
+            }
+        }
+        .padding(6)
     }
 }

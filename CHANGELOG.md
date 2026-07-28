@@ -10,7 +10,49 @@ Format follows [Keep a Changelog](https://keepachangelog.com). Add a new
 `## [<version>]` section at the top for each release, matching the version you
 set in the Xcode project.
 
+Write release notes for the final product users receive, not the development
+history. When a feature is still unreleased, fold its fixes and refinements into
+the original feature bullet instead of adding separate entries for them.
+
 ## [unrelease]
+
+## [0.1.32]
+
+- Add native English, Simplified Chinese, and Japanese localization throughout the app, with a language picker in Settings
+- Search and open files from the project directory in the command palette
+- Open native browser tabs and split panes from the command palette or terminal/editor context menus, with a combined address/search field, navigation controls, page sharing, and restored URLs
+
+## [0.1.31]
+
+- File previews now refresh after files are changed outside Kero
+- Option-key characters from macOS input sources such as Polish Pro now work in terminals; users who prefer terminal Meta bindings can opt in under Settings → Terminal
+
+## [0.1.30]
+
+- Fix Chinese IME under Alacritty backend
+- Reduce hidden Ghostty tab renderer memory
+
+## [0.1.29]
+
+- Add `kero` command: run `kero` in any Kero terminal to create a project in the current directory, optionally with an argv to run directly (`kero vim ~/foo.js`); `kero +themes` browses themes with a live app-wide preview and saves the selection on Return
+- The Git panel now refreshes after commands and when Kero regains focus instead of polling continuously in the background
+
+## [0.1.28]
+
+- Tweak some UI colors
+
+## [0.1.27]
+
+- Choose which terminal emulator drives new panes in Settings → Terminal → Backend. Ghostty remains the default, with a new Alacritty backend
+- Configure the left and right sidebar font size in Settings
+
+## [0.1.26]
+
+- Opening the Ctrl-Tab switcher no longer highlights whichever tab happens to be under the stationary pointer
+- The Processes list no longer shows `<defunct>` entries: those are exited children waiting to be reaped, not something you can see output from or kill
+- Opening a large diff no longer freezes the window: diffs render only the rows on screen and highlight them off the main thread
+- The font setting now applies to the diff viewer too, so diffs match the terminal and the editor
+- Sessions you never open no longer cost any GPU memory. Reopening a window used to draw every restored session straight away, holding a full-size buffer for each whether you looked at it or not; now a pane claims one only when you first view it, and claims one buffer less than before. A pane you have already viewed keeps its buffer until you close it — switching away stops it drawing, but does not hand the memory back.
 
 ## [0.1.25]
 
