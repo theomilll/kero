@@ -61,17 +61,17 @@ enum TerminalBackend: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .libghostty:
             [
-                .init(title: "Excellent performance", isPositive: true),
-                .init(title: "GPU-accelerated", isPositive: true),
-                .init(title: "Higher memory footprint", isPositive: false),
-                .init(title: "Image rendering", isPositive: true),
+                .init(title: String(localized: "Excellent performance"), isPositive: true),
+                .init(title: String(localized: "GPU-accelerated"), isPositive: true),
+                .init(title: String(localized: "Higher memory footprint"), isPositive: false),
+                .init(title: String(localized: "Image rendering"), isPositive: true),
             ]
         case .alacritty:
             [
-                .init(title: "Excellent performance", isPositive: true),
-                .init(title: "GPU-accelerated", isPositive: true),
-                .init(title: "Lower memory footprint", isPositive: true),
-                .init(title: "Image rendering", isPositive: true),
+                .init(title: String(localized: "Excellent performance"), isPositive: true),
+                .init(title: String(localized: "GPU-accelerated"), isPositive: true),
+                .init(title: String(localized: "Lower memory footprint"), isPositive: true),
+                .init(title: String(localized: "Image rendering"), isPositive: true),
             ]
         }
     }
@@ -169,8 +169,8 @@ protocol TerminalBackendSurface: NSView {
     /// them.
     func setSurfaceVisible(_ visible: Bool)
 
-    /// Re-reads `AppSettings` and `Theme`. Called whenever either changes, so
-    /// a live pane picks up a new font or color theme in place.
+    /// Re-reads `AppSettings` and `Theme`. Called whenever a live pane needs
+    /// to pick up a new font, color theme, or input setting in place.
     func applyAppearance()
 
     /// Releases the emulator and its child process bookkeeping. The view
