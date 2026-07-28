@@ -382,7 +382,7 @@ struct ClaudeChatsSidebarView: View {
         // 2. Reuse an idle-at-prompt terminal in the same project directory.
         if let idle = project.sessions.first(where: { session in
             guard let pid = session.shellPid else { return false }
-            return session.terminalView.foregroundPid == pid
+            return session.surface.foregroundPid == pid
                 && ClaudeProjectDirectory.encoded(for: session.currentDirectoryPath) == targetEncoded
         }) {
             manager.revealSession(idle)
