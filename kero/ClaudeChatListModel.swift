@@ -12,6 +12,7 @@ final class ClaudeChatListModel: ObservableObject {
     private(set) var hasLoadedOnce: Bool = false
 
     private var fileStates: [String: (modified: Date, size: Int)] = [:]
+    private var mergeScanStates: [String: MergeScanState] = [:]
     private var summaries: [String: ClaudeChatSummary] = [:]
     private var seenSessionIds: Set<String> = []
     private var isRefreshing = false
@@ -20,7 +21,9 @@ final class ClaudeChatListModel: ObservableObject {
     func sync(
         cwd: String,
         settleStore: ClaudeChatSettleStore,
-        onNewChat: @escaping () -> Void
+        mergeStore: ClaudeChatMergeStore,
+        onNewChat: @escaping () -> Void,
+        onPRMerged: @escaping (_ sessionId: String, _ merge: DetectedMerge) -> Void
     ) {
         guard !isRefreshing else { return }
         isRefreshing = true
@@ -28,6 +31,7 @@ final class ClaudeChatListModel: ObservableObject {
         if self.cwd != cwd {
             self.cwd = cwd
             fileStates = [:]
+            mergeScanStates = [:]
             summaries = [:]
             seenSessionIds = []
             hasLoadedOnce = false
@@ -35,9 +39,14 @@ final class ClaudeChatListModel: ObservableObject {
         }
 
         let previousStates = fileStates
+        let previousMergeStates = mergeScanStates
         Task { @MainActor [weak self] in
             let scanned = await Task.detached(priority: .utility) {
-                Self.scan(cwd: cwd, previousStates: previousStates)
+                Self.scan(
+                    cwd: cwd,
+                    previousStates: previousStates,
+                    previousMergeStates: previousMergeStates
+                )
             }.value
 
             guard let self else { return }
@@ -49,6 +58,7 @@ final class ClaudeChatListModel: ObservableObject {
                     self.chats = []
                 }
                 self.fileStates = [:]
+                self.mergeScanStates = [:]
                 self.summaries = [:]
                 self.seenSessionIds = []
                 self.hasLoadedOnce = true
@@ -61,6 +71,9 @@ final class ClaudeChatListModel: ObservableObject {
                 self.summaries[name] = summary
             }
             self.fileStates = scanned.liveStates
+            self.mergeScanStates = scanned.mergeStates.filter {
+                liveNames.contains($0.key)
+            }
 
             let updatedChats = liveNames.compactMap { self.summaries[$0] }
                 .sorted { $0.modified > $1.modified }
@@ -71,10 +84,22 @@ final class ClaudeChatListModel: ObservableObject {
             let liveSessionIds = Set(
                 liveNames.map { URL(fileURLWithPath: $0).deletingPathExtension().lastPathComponent }
             )
-            settleStore.prune(
-                project: ClaudeProjectDirectory.encoded(for: cwd),
-                keeping: liveSessionIds
-            )
+            let project = ClaudeProjectDirectory.encoded(for: cwd)
+            settleStore.prune(project: project, keeping: liveSessionIds)
+            mergeStore.prune(project: project, keeping: liveSessionIds)
+
+            // Check-and-mark on the main actor so a second window syncing the
+            // same project can never celebrate the same merge twice.
+            for detection in scanned.detected
+            where !mergeStore.isMerged(detection.sessionId, project: project) {
+                mergeStore.markMerged(
+                    detection.sessionId,
+                    project: project,
+                    prNumber: detection.merge.prNumber
+                )
+                onPRMerged(detection.sessionId, detection.merge)
+            }
+
             let visibleSessionIds = Set(updatedChats.map(\.sessionId))
             if self.hasLoadedOnce {
                 for _ in visibleSessionIds.subtracting(self.seenSessionIds) {
@@ -91,10 +116,13 @@ final class ClaudeChatListModel: ObservableObject {
     /// returns nil when the directory is missing.
     private nonisolated static func scan(
         cwd: String,
-        previousStates: [String: (modified: Date, size: Int)]
+        previousStates: [String: (modified: Date, size: Int)],
+        previousMergeStates: [String: MergeScanState]
     ) -> (
         liveStates: [String: (modified: Date, size: Int)],
-        parsed: [(String, ClaudeChatSummary?)]
+        parsed: [(String, ClaudeChatSummary?)],
+        mergeStates: [String: MergeScanState],
+        detected: [(sessionId: String, merge: DetectedMerge)]
     )? {
         guard let directoryURL = ClaudeProjectDirectory.url(for: cwd) else {
             return nil
@@ -146,6 +174,22 @@ final class ClaudeChatListModel: ObservableObject {
                 )
             )
         }
-        return (liveStates, parsed)
+
+        // Merge detection reuses the same changed-file list, so each tick
+        // only tail-reads transcripts that actually grew.
+        var mergeStates = previousMergeStates
+        var detected: [(sessionId: String, merge: DetectedMerge)] = []
+        for file in changedFiles {
+            guard let size = liveStates[file.name]?.size else { continue }
+            let result = ClaudeChatMergeDetector.scan(
+                fileURL: file.url,
+                fileSize: UInt64(size),
+                state: previousMergeStates[file.name]
+            )
+            mergeStates[file.name] = result.state
+            let sessionId = file.url.deletingPathExtension().lastPathComponent
+            detected += result.merges.map { (sessionId, $0) }
+        }
+        return (liveStates, parsed, mergeStates, detected)
     }
 }
