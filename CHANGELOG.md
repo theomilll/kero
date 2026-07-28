@@ -10,7 +10,25 @@ Format follows [Keep a Changelog](https://keepachangelog.com). Add a new
 `## [<version>]` section at the top for each release, matching the version you
 set in the Xcode project.
 
+Write release notes for the final product users receive, not the development
+history. When a feature is still unreleased, fold its fixes and refinements into
+the original feature bullet instead of adding separate entries for them.
+
 ## [unrelease]
+
+## [0.1.29]
+
+- Add `kero` command: run `kero` in any Kero terminal to create a project in the current directory, optionally with an argv to run directly (`kero vim ~/foo.js`); `kero +themes` browses themes with a live app-wide preview and saves the selection on Return
+- The Git panel now refreshes after commands and when Kero regains focus instead of polling continuously in the background
+
+## [0.1.28]
+
+- Tweak some UI colors
+
+## [0.1.27]
+
+- Choose which terminal emulator drives new panes in Settings → Terminal → Backend. Ghostty remains the default, with a new Alacritty backend
+- Configure the left and right sidebar font size in Settings
 
 ## [0.1.26]
 

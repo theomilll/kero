@@ -10,6 +10,7 @@ import SwiftUI
 /// its sessions show as horizontal tabs in the main header.
 struct SidebarView: View {
     @ObservedObject var manager: TerminalManager
+    @ObservedObject private var settings = AppSettings.shared
     @ObservedObject private var themeChanges = Theme.changes
     @Environment(\.openSettings) private var openSettings
     @Environment(\.colorScheme) private var colorScheme
@@ -19,9 +20,20 @@ struct SidebarView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header-height strip housing the traffic-light buttons.
-            WindowDragArea()
-                .frame(height: 38)
+            // Header-height strip housing the traffic-light buttons and the
+            // control for collapsing this sidebar.
+            HStack(spacing: 0) {
+                WindowDragArea()
+                    .frame(maxWidth: .infinity)
+                ChromeIconButton(
+                    systemImage: "sidebar.left",
+                    tooltip: "Toggle Left Sidebar (⌘B)"
+                ) {
+                    manager.toggleLeftSidebar()
+                }
+            }
+            .padding(.trailing, 8)
+            .frame(height: 38)
 
             ScrollView {
                 VStack(spacing: 3) {
@@ -34,7 +46,8 @@ struct SidebarView: View {
                             close: { manager.close(project) },
                             isDragging: draggedProjectID == project.id,
                             onDrag: { updateProjectDrag(source: project.id, location: $0) },
-                            onDragEnded: endProjectDrag
+                            onDragEnded: endProjectDrag,
+                            fontSize: settings.sidebarFontSize
                         )
                         .background {
                             GeometryReader { proxy in
@@ -131,6 +144,36 @@ struct SidebarView: View {
     }
 }
 
+struct ChromeIconButton: View {
+    let systemImage: String
+    let tooltip: String
+    var font: Font = .system(size: 12, weight: .medium)
+    var iconSize: CGFloat = 16
+    var tooltipEdge: TooltipEdge = .below
+    var tooltipAlignment: HorizontalAlignment = .trailing
+    let action: () -> Void
+
+    @State private var isHovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .font(font)
+                .foregroundStyle(isHovering ? .primary : .secondary)
+                .frame(width: iconSize, height: iconSize)
+                .padding(4)
+                .background {
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(isHovering ? Color.primary.opacity(0.08) : .clear)
+                }
+                .contentShape(RoundedRectangle(cornerRadius: 6))
+        }
+        .buttonStyle(.plain)
+        .onHover { isHovering = $0 }
+        .tooltip(tooltip, edge: tooltipEdge, alignment: tooltipAlignment)
+    }
+}
+
 private struct SidebarFooterButton: View {
     let systemImage: String
     let tooltip: String
@@ -139,19 +182,14 @@ private struct SidebarFooterButton: View {
     var tooltipAlignment: HorizontalAlignment = .leading
     let action: () -> Void
 
-    @State private var isHovering = false
-
     var body: some View {
-        Button(action: action) {
-            Image(systemName: systemImage)
-                .font(.system(size: 12, weight: .medium))
-                .foregroundStyle(isHovering ? .primary : .secondary)
-                .frame(width: 24, height: 24)
-                .contentShape(RoundedRectangle(cornerRadius: 6))
-        }
-        .buttonStyle(.plain)
-        .onHover { isHovering = $0 }
-        .tooltip(tooltip, alignment: tooltipAlignment)
+        ChromeIconButton(
+            systemImage: systemImage,
+            tooltip: tooltip,
+            tooltipEdge: .above,
+            tooltipAlignment: tooltipAlignment,
+            action: action
+        )
     }
 }
 
@@ -173,6 +211,7 @@ private struct SidebarProjectRow: View {
     let isDragging: Bool
     let onDrag: (CGPoint) -> Void
     let onDragEnded: () -> Void
+    let fontSize: Double
 
     @State private var isHovering = false
     @State private var isRenaming = false
@@ -260,7 +299,7 @@ private struct SidebarProjectRow: View {
                 if isRenaming {
                     TextField("", text: $renameDraft)
                         .textFieldStyle(.plain)
-                        .font(.system(size: 12, weight: .medium))
+                        .font(.system(size: fontSize, weight: .medium))
                         .focused($renameFocused)
                         .onSubmit(commitRename)
                         .onExitCommand { isRenaming = false }
@@ -271,7 +310,7 @@ private struct SidebarProjectRow: View {
                         }
                 } else {
                     Text(project.name)
-                        .font(.system(size: 12))
+                        .font(.system(size: fontSize))
                         .foregroundStyle(isSelected ? .primary : .secondary)
                         .lineLimit(1)
                 }
@@ -291,7 +330,7 @@ private struct SidebarProjectRow: View {
                 .buttonStyle(.plain)
             } else if index < 9, !isRenaming {
                 Text("⌘\(index + 1)")
-                    .font(.system(size: 10))
+                    .font(.system(size: supportingFontSize))
                     .foregroundStyle(.tertiary)
             }
         }
@@ -318,12 +357,16 @@ private struct SidebarProjectRow: View {
     private var subtitle: some View {
         if project.sessions.count > 1 {
             Text("\(project.sessions.count) sessions")
-                .font(.system(size: 10))
+                .font(.system(size: supportingFontSize))
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
         } else if let session = project.selectedSession {
-            SessionDirectoryLabel(session: session)
+            SessionDirectoryLabel(session: session, fontSize: supportingFontSize)
         }
+    }
+
+    private var supportingFontSize: Double {
+        max(fontSize - 2, AppSettings.sidebarFontSizeRange.lowerBound - 1)
     }
 }
 
@@ -331,11 +374,12 @@ private struct SidebarProjectRow: View {
 /// it observes the session's own published working directory.
 private struct SessionDirectoryLabel: View {
     @ObservedObject var session: TerminalSession
+    let fontSize: Double
 
     var body: some View {
         if let dir = session.directoryLabel {
             Text(dir)
-                .font(.system(size: 10))
+                .font(.system(size: fontSize))
                 .foregroundStyle(.tertiary)
                 .lineLimit(1)
         }

@@ -31,6 +31,8 @@ final class AppSettings: nonisolated ObservableObject {
 
     static let defaultFontSize: Double = 13
     static let fontSizeRange: ClosedRange<Double> = 8...32
+    static let defaultSidebarFontSize: Double = 13
+    static let sidebarFontSizeRange: ClosedRange<Double> = 9...18
 
     /// Light/dark appearance override; `system` follows macOS.
     @Published var theme: AppTheme {
@@ -67,8 +69,15 @@ final class AppSettings: nonisolated ObservableObject {
         didSet { save() }
     }
 
-    /// Ghostty's `font-thicken`: render glyphs with slightly heavier strokes,
-    /// like classic macOS font smoothing. Off by default so kero's text
+    /// Base text size for both sidebars. Each panel preserves its relative
+    /// hierarchy for section labels, content, metadata, and controls.
+    @Published var sidebarFontSize: Double {
+        didSet { save() }
+    }
+
+    /// Render terminal glyphs with slightly heavier strokes, like classic
+    /// macOS font smoothing. Each backend maps this to its own rasterizer.
+    /// Persisted as `terminal.font-thicken`; off by default so Kero's text
     /// matches a stock Ghostty install.
     @Published var fontThicken: Bool {
         didSet { save() }
@@ -95,24 +104,44 @@ final class AppSettings: nonisolated ObservableObject {
         didSet { save() }
     }
 
+    /// Which emulator drives terminal panes. Only ever holds a backend this
+    /// build ships a surface for — see `TerminalBackend` — and a session binds
+    /// its backend at creation, so a change here reaches terminals opened
+    /// afterwards rather than live ones.
+    @Published var terminalBackend: TerminalBackend {
+        didSet { save() }
+    }
+
     private init() {
         let existing = TOML.parse(at: Self.configURL)
         let toml = existing ?? Self.legacyDefaults()
         theme = toml["theme"]?.string.flatMap(AppTheme.init(rawValue:)) ?? .system
         themeDark = Self.knownTheme(
-            toml["theme-dark"]?.string, fallback: Theme.defaultDarkThemeName
+            toml["theme-dark"]?.string,
+            dark: true,
+            fallback: Theme.defaultDarkThemeName
         )
         themeLight = Self.knownTheme(
-            toml["theme-light"]?.string, fallback: Theme.defaultLightThemeName
+            toml["theme-light"]?.string,
+            dark: false,
+            fallback: Theme.defaultLightThemeName
         )
         fontFamily = toml["font-family"]?.string ?? ""
         let size = toml["font-size"]?.double ?? Self.defaultFontSize
         fontSize = Self.fontSizeRange.contains(size) ? size : Self.defaultFontSize
-        fontThicken = toml["font-thicken"]?.bool ?? false
+        let sidebarSize = toml["sidebar.font-size"]?.double
+            ?? Self.defaultSidebarFontSize
+        sidebarFontSize = Self.sidebarFontSizeRange.contains(sidebarSize)
+            ? sidebarSize
+            : Self.defaultSidebarFontSize
+        fontThicken = toml["terminal.font-thicken"]?.bool
+            ?? toml["font-thicken"]?.bool
+            ?? false
         wrapLines = toml["editor.wrap-lines"]?.bool ?? false
         claudeChatsEnabled = toml["claude.chats-enabled"]?.bool ?? false
         claudeChatSounds = toml["claude.chat-sounds"]?.bool ?? true
         restoreTerminalHistory = toml["terminal.restore-history"]?.bool ?? false
+        terminalBackend = TerminalBackend(persisted: toml["terminal.backend"]?.string)
         applyAppearance()
         reloadThemeSelection()
         if existing == nil { save() }
@@ -124,11 +153,13 @@ final class AppSettings: nonisolated ObservableObject {
         Theme.reloadSelection(light: themeLight, dark: themeDark)
     }
 
-    /// A saved theme name, or `fallback` when it's absent or names neither a
-    /// kero built-in nor a catalog theme (so the Settings pickers never show
-    /// an empty selection).
-    private static func knownTheme(_ name: String?, fallback: String) -> String {
-        guard let name, Theme.definition(named: name) != nil else {
+    /// A saved shared-theme name, or `fallback` when it is absent or no longer
+    /// part of the cross-backend catalog, so Settings never shows an empty
+    /// selection after upgrading from the larger Ghostty-only list.
+    private static func knownTheme(
+        _ name: String?, dark: Bool, fallback: String
+    ) -> String {
+        guard let name, Theme.isCommonTheme(named: name, dark: dark) else {
             return fallback
         }
         return name
@@ -144,6 +175,7 @@ final class AppSettings: nonisolated ObservableObject {
     func resetFont() {
         fontFamily = ""
         fontSize = Self.defaultFontSize
+        sidebarFontSize = Self.defaultSidebarFontSize
         fontThicken = false
     }
 
@@ -156,6 +188,7 @@ final class AppSettings: nonisolated ObservableObject {
         claudeChatsEnabled = false
         claudeChatSounds = true
         restoreTerminalHistory = false
+        terminalBackend = .fallback
     }
 
     private func save() {
@@ -175,8 +208,11 @@ final class AppSettings: nonisolated ObservableObject {
             lines.append("font-family = \(TOML.quote(fontFamily))")
         }
         lines.append("font-size = \(TOML.number(fontSize))")
+        if sidebarFontSize != Self.defaultSidebarFontSize {
+            lines.append("sidebar.font-size = \(TOML.number(sidebarFontSize))")
+        }
         if fontThicken {
-            lines.append("font-thicken = true")
+            lines.append("terminal.font-thicken = true")
         }
         if wrapLines {
             lines.append("editor.wrap-lines = true")
@@ -189,6 +225,9 @@ final class AppSettings: nonisolated ObservableObject {
         }
         if restoreTerminalHistory {
             lines.append("terminal.restore-history = true")
+        }
+        if terminalBackend != .fallback {
+            lines.append("terminal.backend = \(TOML.quote(terminalBackend.rawValue))")
         }
         let dir = Self.configURL.deletingLastPathComponent()
         do {

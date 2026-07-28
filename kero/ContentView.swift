@@ -60,7 +60,12 @@ struct ContentView: View {
             }
             .background(Color(nsColor: Theme.background))
 
-            RightSidebarView(manager: manager)
+            // Dropping the hidden sidebar also drops any expanded file tree,
+            // git snapshot and process snapshot it owned instead of retaining
+            // them for the rest of the window's lifetime.
+            if manager.isPanelVisible {
+                RightSidebarView(manager: manager)
+            }
             ClaudeChatsSidebarView(manager: manager)
         }
         .ignoresSafeArea()
@@ -191,17 +196,12 @@ private struct MainHeaderView: View {
                 // No project means the sidebar has nothing to show, so drop
                 // its toggle too — matching the panel collapsing itself.
                 if manager.selectedProject != nil {
-                    Button {
+                    ChromeIconButton(
+                        systemImage: "sidebar.right",
+                        tooltip: "Toggle Right Sidebar (⇧⌘B)"
+                    ) {
                         manager.toggleSidebar()
-                    } label: {
-                        Image(systemName: "sidebar.right")
-                            .font(.system(size: 12, weight: .medium))
-                            .foregroundStyle(manager.isPanelVisible ? Color(nsColor: Theme.accent) : .secondary)
-                            .frame(width: 24, height: 24)
-                            .contentShape(RoundedRectangle(cornerRadius: 6))
                     }
-                    .buttonStyle(.plain)
-                    .tooltip("Toggle Right Sidebar (⇧⌘B)", edge: .below, alignment: .trailing)
                 }
             }
             .padding(.leading, leadingInset)
@@ -311,17 +311,15 @@ private struct SessionTabsView: View {
             .fixedSize(horizontal: true, vertical: false)
             }
 
-            Button {
+            ChromeIconButton(
+                systemImage: "plus",
+                tooltip: "New Session (⌘T)",
+                font: .system(size: 10, weight: .semibold),
+                iconSize: 14,
+                tooltipAlignment: .leading
+            ) {
                 project.newSession()
-            } label: {
-                Image(systemName: "plus")
-                    .font(.system(size: 10, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 22, height: 22)
-                    .contentShape(RoundedRectangle(cornerRadius: 6))
             }
-            .buttonStyle(.plain)
-            .tooltip("New Session (⌘T)", edge: .below)
         }
         .onPreferenceChange(TabFramePreferenceKey.self) { tabFrames = $0 }
     }
