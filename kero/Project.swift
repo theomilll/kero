@@ -8,7 +8,7 @@ import Combine
 import Foundation
 
 /// A project groups tabs and appears as one row in the left sidebar. Each tab
-/// is a niri-style layout of panes (terminal sessions and open files); see
+/// is a recursive split layout of terminal, file, browser, and diff panes; see
 /// `PaneTab`. It always starts with one session; closing the last tab leaves
 /// the project open but empty — only the explicit "Close Project" action (see
 /// `TerminalManager.close(_:)`) removes it from the manager.
@@ -50,10 +50,23 @@ final class Project: nonisolated ObservableObject, nonisolated Identifiable {
     }
 
     var name: String {
-        if let customName, !customName.isEmpty {
+        if let customName = Self.normalizedCustomName(customName) {
             return customName
         }
-        return selectedSession?.title ?? fallbackName
+        guard let title = selectedSession?.title,
+              !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            return fallbackName
+        }
+        return title
+    }
+
+    /// Manual project names are user-authored labels, not terminal protocol
+    /// payloads. Normalize only surrounding whitespace.
+    static func normalizedCustomName(_ name: String?) -> String? {
+        guard let name else { return nil }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// Every terminal session across every pane in every tab.
@@ -97,19 +110,57 @@ final class Project: nonisolated ObservableObject, nonisolated Identifiable {
 
     // MARK: - Project directory
 
+    /// Which rule produced the panel root, so labels can describe it
+    /// truthfully instead of just saying "automatic".
+    enum PanelRootSource: Equatable {
+        /// The directory pinned on the project row.
+        case pinned
+        /// The repository the shell itself sits in.
+        case shell
+        /// The repository the terminal's foreground job sits in — a coding
+        /// agent that moved to another checkout of the same project. Whether
+        /// that checkout is a linked worktree is resolved here, once per
+        /// refresh, so views can label it without touching the disk.
+        case foreground(isWorktree: Bool)
+    }
+
     /// Root for the file tree and git panels: the pinned directory when the
-    /// user set one (and it still exists on disk), else the closest git
-    /// repository containing `cwd`, else `cwd` itself — the
+    /// user set one (and it still exists on disk), else the repository the
+    /// terminal's foreground job moved to (an agent's worktree), else the
+    /// closest git repository containing `cwd`, else `cwd` itself — the
     /// follow-the-terminal behavior used before projects had a directory.
-    /// The automatic repository root is re-derived on every call, so it
-    /// tracks the session in and out of repositories without sticking.
-    /// `isAutomatic` reports which branch produced the root, so labels can
-    /// say "(AUTO)" truthfully even when a vanished pin forced the fallback.
-    func panelRoot(followingSessionAt cwd: String) -> (root: String, isAutomatic: Bool) {
+    /// Everything but the pin is re-derived on every call, so the panels
+    /// track the session in and out of repositories without sticking.
+    func panelRoot(
+        followingSessionAt cwd: String, foregroundAt foregroundCwd: String? = nil
+    ) -> (root: String, source: PanelRootSource) {
         if let pinned = customDirectory, FileManager.default.fileExists(atPath: pinned) {
-            return (pinned, false)
+            return (pinned, .pinned)
         }
-        return (Self.closestGitRepository(containing: cwd) ?? cwd, true)
+        let shellRoot = Self.closestGitRepository(containing: cwd) ?? cwd
+        // Only a *different repository* re-roots the panels. A foreground job
+        // running in a subdirectory of the shell's own checkout resolves to
+        // the same root and is ignored, which keeps the file tree from
+        // collapsing its expanded rows every time a command runs.
+        if let foregroundCwd,
+           let foregroundRoot = Self.closestGitRepository(containing: foregroundCwd),
+           foregroundRoot != shellRoot {
+            return (foregroundRoot, .foreground(isWorktree: Self.isLinkedWorktree(foregroundRoot)))
+        }
+        return (shellRoot, .shell)
+    }
+
+    /// Whether `root` is a linked worktree rather than a normal checkout: its
+    /// `.git` is a file pointing into the main repository's `worktrees`
+    /// directory (a submodule's points into `modules` instead).
+    private static func isLinkedWorktree(_ root: String) -> Bool {
+        let gitPath = (root as NSString).appendingPathComponent(".git")
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: gitPath, isDirectory: &isDirectory),
+              !isDirectory.boolValue,
+              let contents = try? String(contentsOfFile: gitPath, encoding: .utf8)
+        else { return false }
+        return contents.contains("/worktrees/")
     }
 
     /// The directory of the nearest enclosing git repository: walks up from
@@ -191,9 +242,8 @@ final class Project: nonisolated ObservableObject, nonisolated Identifiable {
     func splitDown() { split(toward: .bottom) }
     func splitUp() { split(toward: .top) }
 
-    /// Splits the focused pane on `edge` with a fresh terminal. Left/right open
-    /// a new column; top/bottom stack within the focused column. No-op while a
-    /// diff is focused.
+    /// Splits the focused pane's rectangle on `edge` with a fresh terminal.
+    /// No-op while a diff is focused.
     func split(toward edge: PaneDropEdge) {
         guard let tab = selectedTab, tab.canSplit else { return }
         let session = makeSession()
@@ -579,25 +629,33 @@ final class Project: nonisolated ObservableObject, nonisolated Identifiable {
         from snap: SessionSnapshot.ProjectSnapshot.TabSnapshot,
         histories: [String: String] = [:]
     ) {
-        var columns: [PaneColumn] = []
-        for columnSnap in snap.columns {
-            var panes: [Pane] = []
-            for paneSnap in columnSnap.panes {
-                let restoredHistory = paneSnap.historyKey.flatMap { histories[$0] }
-                panes.append(Pane(
-                    content: makeContent(from: paneSnap.content, restoredHistory: restoredHistory),
-                    weight: CGFloat(paneSnap.weight)
-                ))
-            }
-            guard !panes.isEmpty else { continue }
-            columns.append(PaneColumn(panes: panes, weight: CGFloat(columnSnap.weight)))
-        }
-        guard !columns.isEmpty else { return }
-        let col = min(max(0, snap.focusedColumn), columns.count - 1)
-        let row = min(max(0, snap.focusedRow), columns[col].panes.count - 1)
-        let tab = PaneTab(columns: columns, focusedPaneID: columns[col].panes[row].id)
+        let layout = restoreLayout(from: snap.layout, histories: histories)
+        let panes = layout.allPanes
+        guard !panes.isEmpty else { return }
+        let focusedIndex = min(max(0, snap.focusedPaneIndex), panes.count - 1)
+        let tab = PaneTab(layout: layout, focusedPaneID: panes[focusedIndex].id)
         tab.customName = snap.customName
         append(tab)
+    }
+
+    private func restoreLayout(
+        from snap: SessionSnapshot.ProjectSnapshot.LayoutSnapshot,
+        histories: [String: String]
+    ) -> PaneNode {
+        switch snap {
+        case .pane(let pane):
+            let restoredHistory = pane.historyKey.flatMap { histories[$0] }
+            return .pane(Pane(content: makeContent(
+                from: pane.content, restoredHistory: restoredHistory
+            )))
+        case .split(let axis, let fraction, let first, let second):
+            return .split(PaneSplit(
+                axis: axis,
+                fraction: CGFloat(fraction),
+                first: restoreLayout(from: first, histories: histories),
+                second: restoreLayout(from: second, histories: histories)
+            ))
+        }
     }
 
     private func makeContent(
