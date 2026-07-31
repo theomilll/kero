@@ -16,8 +16,14 @@ the original feature bullet instead of adding separate entries for them.
 
 ## [unrelease]
 
+- The Files panel now shows repository status with colored filenames and badges, including dimmed Git-ignored files
+- Switch directly to tabs with Ctrl+1–9, without also holding Shift
+
+## [0.1.35]
+
 - Add per-pane live titles and split controls in split layouts
 - Splitting a pane now divides only the focused pane, preserving the size of neighboring panes in nested layouts
+- The Ctrl-Tab switcher now lists tabs in the order you last used them and opens already pointing at the previous tab, so a quick Ctrl-Tab flips between the two tabs you're working in
 
 ## [0.1.34]
 
