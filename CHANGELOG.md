@@ -14,7 +14,38 @@ Write release notes for the final product users receive, not the development
 history. When a feature is still unreleased, fold its fixes and refinements into
 the original feature bullet instead of adding separate entries for them.
 
-## [unrelease]
+## [unreleased]
+
+- Browser tabs now use a modern Safari user agent, fixing sites such as Bilibili that otherwise report an outdated browser
+
+## [0.1.37]
+
+- Keep the left sidebar toggle available in the main header while the sidebar is hidden
+- Adjust sidebar project typography scaling
+
+## [0.1.36]
+
+- The Files panel now shows repository status with colored filenames and badges, including dimmed Git-ignored files
+- Switch directly to tabs with Ctrl+1–9, without also holding Shift
+
+## [0.1.35]
+
+- Add per-pane live titles and split controls in split layouts
+- Splitting a pane now divides only the focused pane, preserving the size of neighboring panes in nested layouts
+- The Ctrl-Tab switcher now lists tabs in the order you last used them and opens already pointing at the previous tab, so a quick Ctrl-Tab flips between the two tabs you're working in
+
+## [0.1.34]
+
+- Show terminal titles verbatim while keeping sidebar project rows stable as titles update or hover controls appear
+- Follow the terminal's foreground job into another checkout: when an agent
+  switches to its own git worktree, Files, Git and Info re-root to it
+- Settings font preview now reflects “Thicken font strokes”
+- Prevent terminal tabs from crashing after switching sessions or resizing during a partial redraw
+- Files created in a terminal now use your system's default permissions instead of being made private to your user
+
+## [0.1.33]
+
+- Fix: never set `LANG` env for the terminal session
 
 ## [0.1.32]
 

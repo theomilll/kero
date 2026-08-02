@@ -297,12 +297,13 @@ private struct SidebarProjectRow: View {
             Image(systemName: "folder")
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(isSelected ? Color(nsColor: Theme.accent) : .secondary)
+                .frame(width: max(14, fontSize), alignment: .center)
 
             VStack(alignment: .leading, spacing: 1) {
                 if isRenaming {
                     TextField("", text: $renameDraft)
                         .textFieldStyle(.plain)
-                        .font(.system(size: fontSize, weight: .medium))
+                        .font(.system(size: projectTitleFontSize, weight: .medium))
                         .focused($renameFocused)
                         .onSubmit(commitRename)
                         .onExitCommand { isRenaming = false }
@@ -313,7 +314,7 @@ private struct SidebarProjectRow: View {
                         }
                 } else {
                     Text(project.name)
-                        .font(.system(size: fontSize))
+                        .font(.system(size: projectTitleFontSize))
                         .foregroundStyle(isSelected ? .primary : .secondary)
                         .lineLimit(1)
                 }
@@ -322,20 +323,27 @@ private struct SidebarProjectRow: View {
 
             Spacer(minLength: 0)
 
-            if isHovering, !isRenaming {
-                Button(action: close) {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 16, height: 16)
-                        .contentShape(Rectangle())
+            // Fixed trailing slot: close and the ⌘N hint share the same
+            // width so hover does not reflow the row. Continuous title
+            // updates from the terminal re-render the strip; without a
+            // stable slot that reflow reads as jitter under the pointer.
+            ZStack(alignment: .trailing) {
+                if isHovering, !isRenaming {
+                    Button(action: close) {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16, height: 16)
+                            .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                } else if index < 9, !isRenaming {
+                    Text(verbatim: "⌘\(index + 1)")
+                        .font(.system(size: supportingFontSize))
+                        .foregroundStyle(.tertiary)
                 }
-                .buttonStyle(.plain)
-            } else if index < 9, !isRenaming {
-                Text(verbatim: "⌘\(index + 1)")
-                    .font(.system(size: supportingFontSize))
-                    .foregroundStyle(.tertiary)
             }
+            .frame(width: 24, height: 16, alignment: .trailing)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -351,8 +359,7 @@ private struct SidebarProjectRow: View {
     }
 
     private func commitRename() {
-        let trimmed = renameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
-        project.customName = trimmed.isEmpty ? nil : trimmed
+        project.customName = Project.normalizedCustomName(renameDraft)
         isRenaming = false
     }
 
@@ -369,7 +376,17 @@ private struct SidebarProjectRow: View {
     }
 
     private var supportingFontSize: Double {
-        max(fontSize - 2, AppSettings.sidebarFontSizeRange.lowerBound - 1)
+        10 * sidebarFontScale
+    }
+
+    /// Match the file-tree label's designed 11.5 pt size while following the
+    /// shared sidebar font-size setting.
+    private var projectTitleFontSize: Double {
+        11.5 * sidebarFontScale
+    }
+
+    private var sidebarFontScale: Double {
+        fontSize / AppSettings.defaultSidebarFontSize
     }
 }
 

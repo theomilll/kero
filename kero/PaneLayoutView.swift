@@ -6,10 +6,9 @@
 import AppKit
 import SwiftUI
 
-/// Tiles a tab's panes niri-style: columns laid out left-to-right, each a
-/// vertical stack of panes. Column widths and pane heights come from their
-/// relative `weight`s; draggable dividers between tiles shift weight between
-/// neighbors. Only the selected tab's layout is ever mounted.
+/// Tiles a tab's recursive split tree. Every divider belongs to the pane
+/// rectangle that was split, so nested horizontal and vertical layouts can be
+/// combined freely. Only the selected tab's layout is ever mounted.
 struct PaneLayoutView: View {
     @ObservedObject var tab: PaneTab
     @ObservedObject private var themeChanges = Theme.changes
@@ -31,11 +30,11 @@ struct PaneLayoutView: View {
     private let thumbnailMaxSize = CGSize(width: 220, height: 160)
 
     @State private var drag: DragState?
-    /// While a divider drag is in flight the new weights live here — local
-    /// @State that re-renders only this grid — instead of in `tab.columns`,
+    /// While a divider drag is in flight the new split fraction lives here —
+    /// local @State that re-renders only this grid — instead of in `tab.layout`,
     /// whose @Published change would re-render the whole window every frame.
     /// Committed back to the model once, on release.
-    @State private var dragColumns: [PaneColumn]?
+    @State private var dragLayout: PaneNode?
 
     /// Global-space frame of every pane, so a pane-move drag can tell which
     /// pane the cursor is over.
@@ -47,13 +46,8 @@ struct PaneLayoutView: View {
     @State private var dragThumbnail: NSImage?
 
     private struct DragState {
-        enum Kind: Equatable {
-            case columns
-            case rows(columnID: UUID)
-        }
-        var kind: Kind
-        var index: Int
-        var weights: [CGFloat]
+        var splitID: UUID
+        var fraction: CGFloat
     }
 
     private struct PaneMove {
@@ -97,7 +91,7 @@ struct PaneLayoutView: View {
         // stale snapshot never sticks around.
         .onChange(of: tab.isZoomed) {
             drag = nil
-            dragColumns = nil
+            dragLayout = nil
             paneDrag = nil
             dragThumbnail = nil
         }
@@ -105,31 +99,53 @@ struct PaneLayoutView: View {
 
     private var grid: some View {
         GeometryReader { geo in
-            let columns = dragColumns ?? tab.columns
-            let availableWidth = max(0, geo.size.width - gap * CGFloat(max(0, columns.count - 1)))
-            let widths = sizes(for: columns.map(\.weight), available: availableWidth)
+            let layout = dragLayout ?? tab.layout
+            let geometry = layout.geometry(
+                in: CGRect(origin: .zero, size: geo.size), gap: gap
+            )
 
             ZStack(alignment: .topLeading) {
-                HStack(spacing: 0) {
-                    ForEach(Array(columns.enumerated()), id: \.element.id) { columnIndex, column in
-                        columnView(
-                            column,
-                            columnIndex: columnIndex,
-                            width: widths[columnIndex],
-                            height: geo.size.height
+                ForEach(geometry.panes) { placement in
+                    PaneView(
+                        tab: tab,
+                        pane: placement.pane,
+                        showFocusRing: tab.hasMultiplePanes,
+                        allowsMove: true,
+                        isMoveSource: paneDrag?.sourceID == placement.pane.id,
+                        dropEdge: paneDrag?.targetID == placement.pane.id
+                            ? paneDrag?.edge : nil,
+                        onMove: {
+                            updateDropTarget(
+                                source: placement.pane.id, location: $0
+                            )
+                        },
+                        onMoveEnded: { commitPaneMove() },
+                        onSplit: onSplit,
+                        onNewBrowserTab: onNewBrowserTab,
+                        onNewBrowserPane: onNewBrowserPane
+                    )
+                    .frame(
+                        width: placement.frame.width,
+                        height: placement.frame.height
+                    )
+                    .offset(x: placement.frame.minX, y: placement.frame.minY)
+                }
+
+                ForEach(geometry.dividers) { divider in
+                    ResizableDivider(axis: divider.axis) { translation in
+                        resizeSplit(
+                            divider.id,
+                            translation: translation,
+                            available: divider.availableLength
                         )
-                        if columnIndex < columns.count - 1 {
-                            ResizableDivider(orientation: .columns, thickness: gap) { translation in
-                                resizeColumns(
-                                    dividerAt: columnIndex,
-                                    translation: translation,
-                                    availableWidth: availableWidth
-                                )
-                            } onEnded: {
-                                commitDrag()
-                            }
-                        }
+                    } onEnded: {
+                        commitDrag()
                     }
+                    .frame(
+                        width: divider.frame.width,
+                        height: divider.frame.height
+                    )
+                    .offset(x: divider.frame.minX, y: divider.frame.minY)
                 }
 
                 // The carried pane's thumbnail, trailing the cursor. Positioned
@@ -150,95 +166,34 @@ struct PaneLayoutView: View {
         }
     }
 
-    @ViewBuilder
-    private func columnView(
-        _ column: PaneColumn, columnIndex: Int, width: CGFloat, height: CGFloat
-    ) -> some View {
-        let availableHeight = max(0, height - gap * CGFloat(max(0, column.panes.count - 1)))
-        let heights = sizes(for: column.panes.map(\.weight), available: availableHeight)
-
-        VStack(spacing: 0) {
-            ForEach(Array(column.panes.enumerated()), id: \.element.id) { paneIndex, pane in
-                PaneView(
-                    tab: tab,
-                    pane: pane,
-                    showFocusRing: tab.hasMultiplePanes,
-                    allowsMove: true,
-                    isMoveSource: paneDrag?.sourceID == pane.id,
-                    dropEdge: paneDrag?.targetID == pane.id ? paneDrag?.edge : nil,
-                    onMove: { updateDropTarget(source: pane.id, location: $0) },
-                    onMoveEnded: { commitPaneMove() },
-                    onSplit: onSplit,
-                    onNewBrowserTab: onNewBrowserTab,
-                    onNewBrowserPane: onNewBrowserPane
-                )
-                .frame(width: width, height: heights[paneIndex])
-                if paneIndex < column.panes.count - 1 {
-                    ResizableDivider(orientation: .rows, thickness: gap) { translation in
-                        resizePanes(
-                            columnIndex: columnIndex,
-                            dividerAt: paneIndex,
-                            translation: translation,
-                            availableHeight: availableHeight
-                        )
-                    } onEnded: {
-                        commitDrag()
-                    }
-                    .frame(width: width)
-                }
-            }
-        }
-        .frame(width: width, height: height)
-    }
-
-    /// Distributes `available` across items in proportion to their weights.
-    private func sizes(for weights: [CGFloat], available: CGFloat) -> [CGFloat] {
-        let total = weights.reduce(0, +)
-        guard total > 0, !weights.isEmpty else {
-            let each = weights.isEmpty ? 0 : available / CGFloat(weights.count)
-            return weights.map { _ in each }
-        }
-        return weights.map { $0 / total * available }
-    }
-
     // MARK: - Resizing
 
-    private func resizeColumns(dividerAt index: Int, translation: CGFloat, availableWidth: CGFloat) {
-        let baseline = baselineWeights(for: .columns, index: index) { tab.columns.map(\.weight) }
-        guard availableWidth > 0, baseline.indices.contains(index + 1) else { return }
-        let (left, right) = adjusted(baseline: baseline, at: index, translation: translation, available: availableWidth)
-        var columns = tab.columns
-        guard columns.indices.contains(index + 1) else { return }
-        columns[index].weight = left
-        columns[index + 1].weight = right
-        dragColumns = columns
-    }
-
-    private func resizePanes(
-        columnIndex: Int, dividerAt index: Int, translation: CGFloat, availableHeight: CGFloat
+    private func resizeSplit(
+        _ splitID: UUID, translation: CGFloat, available: CGFloat
     ) {
-        guard tab.columns.indices.contains(columnIndex) else { return }
-        let columnID = tab.columns[columnIndex].id
-        let baseline = baselineWeights(for: .rows(columnID: columnID), index: index) {
-            tab.columns[columnIndex].panes.map(\.weight)
+        guard available > 0 else { return }
+        let baseline: CGFloat
+        if let drag, drag.splitID == splitID {
+            baseline = drag.fraction
+        } else {
+            guard let fraction = tab.layout.fraction(of: splitID) else { return }
+            baseline = fraction
+            drag = DragState(splitID: splitID, fraction: fraction)
         }
-        guard availableHeight > 0, baseline.indices.contains(index + 1) else { return }
-        let (top, bottom) = adjusted(baseline: baseline, at: index, translation: translation, available: availableHeight)
-        var columns = tab.columns
-        guard columns.indices.contains(columnIndex),
-              columns[columnIndex].panes.indices.contains(index + 1) else { return }
-        columns[columnIndex].panes[index].weight = top
-        columns[columnIndex].panes[index + 1].weight = bottom
-        dragColumns = columns
+        let fraction = min(
+            max(baseline + translation / available, minFraction),
+            1 - minFraction
+        )
+        dragLayout = tab.layout.settingFraction(of: splitID, to: fraction)
     }
 
-    /// Writes the in-flight weights back to the model once the drag ends —
+    /// Writes the in-flight split tree back to the model once the drag ends —
     /// a single @Published update instead of one per frame.
     private func commitDrag() {
-        if let dragColumns {
-            tab.columns = dragColumns
+        if let dragLayout {
+            tab.layout = dragLayout
         }
-        dragColumns = nil
+        dragLayout = nil
         drag = nil
     }
 
@@ -339,61 +294,23 @@ struct PaneLayoutView: View {
         }
     }
 
-    /// Baseline weights captured at the start of a drag, so the cumulative
-    /// gesture translation is always applied against a fixed starting point.
-    private func baselineWeights(
-        for kind: DragState.Kind, index: Int, current: () -> [CGFloat]
-    ) -> [CGFloat] {
-        if let drag, drag.kind == kind, drag.index == index {
-            return drag.weights
-        }
-        let weights = current()
-        drag = DragState(kind: kind, index: index, weights: weights)
-        return weights
-    }
-
-    /// Splits `translation` (points) into new weights for the two tiles either
-    /// side of the divider, keeping each at or above `minFraction`.
-    private func adjusted(
-        baseline: [CGFloat], at index: Int, translation: CGFloat, available: CGFloat
-    ) -> (CGFloat, CGFloat) {
-        let total = baseline.reduce(0, +)
-        let minWeight = total * minFraction
-        let delta = translation / available * total
-        var first = baseline[index] + delta
-        var second = baseline[index + 1] - delta
-        if first < minWeight { second -= (minWeight - first); first = minWeight }
-        if second < minWeight { first -= (minWeight - second); second = minWeight }
-        return (first, second)
-    }
 }
 
 /// Invisible drag strip in the gap between two tiles. Dragging shifts weight
 /// between the neighbors; the cursor hints at the resize direction.
 private struct ResizableDivider: View {
-    enum Orientation { case columns, rows }
-
-    let orientation: Orientation
-    let thickness: CGFloat
+    let axis: PaneSplitAxis
     let onChanged: (CGFloat) -> Void
     let onEnded: () -> Void
 
     var body: some View {
         Rectangle()
             .fill(Color.clear)
-            .frame(
-                width: orientation == .columns ? thickness : nil,
-                height: orientation == .rows ? thickness : nil
-            )
-            .frame(
-                maxWidth: orientation == .rows ? .infinity : nil,
-                maxHeight: orientation == .columns ? .infinity : nil
-            )
             .contentShape(Rectangle())
             // System pointer resolution rather than pushing onto the cursor
             // stack by hand — see SidebarResizeHandle for why the manual push
             // never showed up next to a file editor.
-            .pointerStyle(orientation == .columns ? .columnResize : .rowResize)
+            .pointerStyle(axis == .horizontal ? .columnResize : .rowResize)
             // Global coordinate space is essential: the divider itself shifts
             // as the panes resize, so a local-space translation would be
             // measured against a moving reference frame and oscillate (the
@@ -402,7 +319,11 @@ private struct ResizableDivider: View {
             .gesture(
                 DragGesture(minimumDistance: 1, coordinateSpace: .global)
                     .onChanged { value in
-                        onChanged(orientation == .columns ? value.translation.width : value.translation.height)
+                        onChanged(
+                            axis == .horizontal
+                                ? value.translation.width
+                                : value.translation.height
+                        )
                     }
                     .onEnded { _ in onEnded() }
             )
@@ -410,23 +331,22 @@ private struct ResizableDivider: View {
 }
 
 /// One tile: hosts its content and, when the tab holds more than one pane,
-/// draws a focus ring (accent for the focused pane, faint otherwise), a thin
-/// top strip you can grab to move the pane onto another, and a highlight while
-/// it's the drop target.
+/// draws an accent focus ring, its own title/actions header you can grab to
+/// move the pane onto another, and a highlight while it's the drop target.
 private struct PaneView: View {
     @ObservedObject var tab: PaneTab
     @ObservedObject private var themeChanges = Theme.changes
     let pane: Pane
     let showFocusRing: Bool
-    /// Whether the top grab strip is offered at all — false while zoomed,
-    /// where there is no other pane on screen to drop onto.
+    /// Whether the header can be grabbed — false while zoomed, where there is
+    /// no other pane on screen to drop onto.
     let allowsMove: Bool
     /// The pane currently being carried by a move drag (dimmed).
     let isMoveSource: Bool
     /// When this pane is the drop target, the edge the carried pane will land
     /// on — drives the half-pane preview. Nil when it isn't the target.
     let dropEdge: PaneDropEdge?
-    /// Reports the pointer (global space) as the top strip is dragged.
+    /// Reports the pointer (global space) as the header title is dragged.
     let onMove: (CGPoint) -> Void
     let onMoveEnded: () -> Void
     /// Splits the focused pane on the given edge (from the content's context
@@ -434,12 +354,6 @@ private struct PaneView: View {
     let onSplit: (PaneDropEdge) -> Void
     let onNewBrowserTab: (String?) -> Void
     let onNewBrowserPane: (String?) -> Void
-
-    /// Height of the grab strip at the pane's top.
-    private let handleHeight: CGFloat = 8
-
-    @State private var isHandleHovered = false
-    @State private var isDragging = false
 
     private var isFocused: Bool { tab.focusedPaneID == pane.id }
 
@@ -452,18 +366,31 @@ private struct PaneView: View {
     }
 
     var body: some View {
-        // Single-pane tabs render exactly as before splits existed — no ring,
-        // no handle — so nothing about the common case changes.
+        // A split pane gets focus-aware chrome and its own header. Single-pane
+        // tabs render their content without pane chrome.
         if showFocusRing {
-            content
+            VStack(spacing: 0) {
+                PaneHeaderView(
+                    content: pane.content,
+                    isFocused: isFocused,
+                    allowsMove: allowsMove,
+                    focus: focus,
+                    onMove: onMove,
+                    onMoveEnded: onMoveEnded,
+                    onSplit: splitFromMenu
+                )
+                // The tooltip hangs into the terminal below. Keep the header
+                // above that AppKit-backed sibling so its material and text
+                // aren't covered while only the shadow remains visible.
+                .zIndex(1)
+                content
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
                 // Deliberately no clip: masking an AppKit view forces an
                 // offscreen recomposite that flickers on live resize. The
                 // content background matches the surrounding gaps, so square
                 // content corners blend in and only the rounded stroke reads.
                 .overlay { focusRing }
-                .overlay(alignment: .top) {
-                    if allowsMove { moveHandle }
-                }
                 .overlay { dropHighlight }
                 .opacity(isMoveSource ? 0.55 : 1)
                 .background(frameReporter)
@@ -541,50 +468,6 @@ private struct PaneView: View {
             )
     }
 
-    /// Thin strip pinned to the pane's top edge — an absolutely-positioned grab
-    /// handle over the content — that you drag to move this pane onto another.
-    /// A grab bar fades in on hover so the zone is easy to find; the strip sits
-    /// in the terminal's own top padding, so it doesn't cover text. Global
-    /// coordinate space so the reported location survives the layout shifting.
-    private var moveHandle: some View {
-        Color.clear
-            .frame(height: handleHeight)
-            .frame(maxWidth: .infinity)
-            .overlay {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 11, weight: .bold))
-                    .foregroundStyle(.secondary)
-                    .opacity(isHandleHovered ? 0.9 : 0)
-            }
-            .contentShape(Rectangle())
-            // onContinuousHover (not onHover): re-assert the open hand on every
-            // move so it wins against the terminal re-setting its own cursor.
-            // On exit, reset explicitly — moving *up* off the handle lands in the
-            // gap, which has no cursor management to revert it otherwise. Both
-            // guarded by !isDragging so they never fight the drag cursor.
-            .onContinuousHover { phase in
-                switch phase {
-                case .active:
-                    isHandleHovered = true
-                    if !isDragging { NSCursor.openHand.set() }
-                case .ended:
-                    isHandleHovered = false
-                    if !isDragging { NSCursor.arrow.set() }
-                }
-            }
-            .gesture(
-                DragGesture(minimumDistance: 4, coordinateSpace: .global)
-                    .onChanged { value in
-                        isDragging = true
-                        onMove(value.location)
-                    }
-                    .onEnded { _ in
-                        isDragging = false
-                        onMoveEnded()
-                    }
-            )
-    }
-
     @ViewBuilder
     private var dropHighlight: some View {
         if let dropEdge {
@@ -620,6 +503,216 @@ private struct PaneView: View {
                 value: [pane.id: proxy.frame(in: .global)]
             )
         }
+    }
+}
+
+/// Compact chrome for a pane in a split tab. The title region is the pane-move
+/// handle; the trailing buttons keep the common split directions within the
+/// pane they act on.
+private struct PaneHeaderView: View {
+    @ObservedObject private var themeChanges = Theme.changes
+    let content: PaneContent
+    let isFocused: Bool
+    let allowsMove: Bool
+    let focus: () -> Void
+    let onMove: (CGPoint) -> Void
+    let onMoveEnded: () -> Void
+    let onSplit: (PaneDropEdge) -> Void
+
+    @State private var isMoveHovered = false
+    @State private var isDragging = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            moveRegion
+
+            paneAction(
+                systemImage: "rectangle.split.2x1",
+                label: "Split Right",
+                tooltip: "Split Right (⌘D)",
+                edge: .right
+            )
+            paneAction(
+                systemImage: "rectangle.split.1x2",
+                label: "Split Down",
+                tooltip: "Split Down (⇧⌘D)",
+                edge: .bottom
+            )
+        }
+        .padding(.leading, 9)
+        .padding(.trailing, 5)
+        .frame(height: 30)
+        .background(Color(nsColor: Theme.background))
+    }
+
+    @ViewBuilder
+    private var moveRegion: some View {
+        if allowsMove {
+            title
+                .contentShape(Rectangle())
+                .onTapGesture(perform: focus)
+                // Re-assert the hand as the terminal changes the cursor while
+                // the pointer crosses the pane boundary below the header.
+                .onContinuousHover { phase in
+                    switch phase {
+                    case .active:
+                        isMoveHovered = true
+                        if !isDragging { NSCursor.openHand.set() }
+                    case .ended:
+                        isMoveHovered = false
+                        if !isDragging { NSCursor.arrow.set() }
+                    }
+                }
+                .gesture(
+                    DragGesture(minimumDistance: 4, coordinateSpace: .global)
+                        .onChanged { value in
+                            isDragging = true
+                            onMove(value.location)
+                        }
+                        .onEnded { _ in
+                            isDragging = false
+                            onMoveEnded()
+                        }
+                )
+        } else {
+            title
+                .contentShape(Rectangle())
+                .onTapGesture(perform: focus)
+        }
+    }
+
+    private var title: some View {
+        PaneHeaderTitle(content: content, isFocused: isFocused)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .opacity(isMoveHovered ? 1 : 0.9)
+    }
+
+    private func paneAction(
+        systemImage: String,
+        label: LocalizedStringKey,
+        tooltip: LocalizedStringKey,
+        edge: PaneDropEdge
+    ) -> some View {
+        Button {
+            focus()
+            onSplit(edge)
+        } label: {
+            Image(systemName: systemImage)
+                .font(.system(size: 11, weight: .medium))
+                .foregroundStyle(.secondary)
+                .frame(width: 14, height: 14)
+                .padding(4)
+                .contentShape(RoundedRectangle(cornerRadius: 5))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(label)
+        .tooltip(tooltip, edge: .below, alignment: .trailing)
+    }
+}
+
+/// Per-kind wrappers observe the content object itself so live terminal titles,
+/// browser favicons, file renames and dirty state update without rebuilding the
+/// surrounding pane layout.
+private struct PaneHeaderTitle: View {
+    let content: PaneContent
+    let isFocused: Bool
+
+    @ViewBuilder
+    var body: some View {
+        switch content {
+        case .session(let session):
+            SessionPaneHeaderTitle(session: session, isFocused: isFocused)
+        case .file(let file):
+            FilePaneHeaderTitle(file: file, isFocused: isFocused)
+        case .browser(let browser):
+            BrowserPaneHeaderTitle(browser: browser, isFocused: isFocused)
+        case .diff(let diff):
+            PaneHeaderLabel(
+                systemImage: "plus.forwardslash.minus",
+                title: diff.title,
+                isFocused: isFocused
+            )
+        }
+    }
+}
+
+private struct SessionPaneHeaderTitle: View {
+    @ObservedObject var session: TerminalSession
+    let isFocused: Bool
+
+    var body: some View {
+        PaneHeaderLabel(
+            systemImage: "terminal",
+            title: session.title,
+            isFocused: isFocused
+        )
+    }
+}
+
+private struct FilePaneHeaderTitle: View {
+    @ObservedObject var file: FileTab
+    let isFocused: Bool
+
+    var body: some View {
+        PaneHeaderLabel(
+            systemImage: "doc.text",
+            title: file.name,
+            isFocused: isFocused,
+            isDirty: file.isDirty
+        )
+        .help(file.path)
+    }
+}
+
+private struct BrowserPaneHeaderTitle: View {
+    @ObservedObject var browser: BrowserTab
+    let isFocused: Bool
+
+    var body: some View {
+        PaneHeaderLabel(
+            systemImage: "globe",
+            browser: browser,
+            title: browser.title,
+            isFocused: isFocused
+        )
+        .help(browser.urlString)
+    }
+}
+
+private struct PaneHeaderLabel: View {
+    let systemImage: String
+    var browser: BrowserTab? = nil
+    let title: String
+    let isFocused: Bool
+    var isDirty = false
+
+    var body: some View {
+        HStack(spacing: 6) {
+            if let browser {
+                BrowserFaviconView(browser: browser, size: 12)
+                    .foregroundStyle(iconStyle)
+            } else {
+                Image(systemName: systemImage)
+                    .font(.system(size: 10, weight: .medium))
+                    .foregroundStyle(iconStyle)
+            }
+            Text(verbatim: title)
+                .font(.system(size: 11.5, weight: .medium))
+                .foregroundStyle(isFocused ? .primary : .secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+            if isDirty {
+                Circle()
+                    .fill(.secondary)
+                    .frame(width: 5, height: 5)
+            }
+        }
+    }
+
+    private var iconStyle: AnyShapeStyle {
+        isFocused
+            ? AnyShapeStyle(Color(nsColor: Theme.accent))
+            : AnyShapeStyle(.tertiary)
     }
 }
 
