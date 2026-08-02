@@ -160,11 +160,15 @@ struct ContentView: View {
 }
 
 /// Slim bar above the terminal: the selected project's sessions as
-/// horizontal tabs on the left, sidebar toggle on the right. Doubles as
+/// horizontal tabs, with sidebar controls at the outer edges. Doubles as
 /// window-drag space.
 private struct MainHeaderView: View {
     @ObservedObject var manager: TerminalManager
     @ObservedObject private var themeChanges = Theme.changes
+
+    /// Keep an always-available grab target beside the trailing controls,
+    /// even when the session strip is full.
+    private let minimumWindowDragWidth: CGFloat = 100
 
     /// With the left sidebar hidden the header slides under the window's
     /// traffic-light buttons, so inset its content to clear them.
@@ -172,21 +176,43 @@ private struct MainHeaderView: View {
         manager.isLeftSidebarVisible ? 8 : 78
     }
 
+    /// A hidden sidebar moves its toggle into this header. Reserve the
+    /// button and its following HStack spacing before sizing the tab strip.
+    private var hiddenLeftSidebarControlWidth: CGFloat {
+        manager.isLeftSidebarVisible ? 0 : 32
+    }
+
     var body: some View {
         GeometryReader { geo in
             HStack(spacing: 8) {
+                if !manager.isLeftSidebarVisible {
+                    ChromeIconButton(
+                        systemImage: "sidebar.left",
+                        tooltip: "Toggle Left Sidebar (⌘B)",
+                        tooltipAlignment: .leading
+                    ) {
+                        manager.toggleLeftSidebar()
+                    }
+                }
                 if let project = manager.selectedProject {
                     // Everything in the header that isn't the scrollable tab
-                    // strip: leading inset + trailing padding (8), HStack
-                    // spacings (16), sidebar toggle (24), "+" and spacing (26),
-                    // and the exit-zoom button (24 + 8 spacing) while shown.
+                    // strip: leading inset, an optional left-sidebar control,
+                    // trailing padding (8), HStack spacings (16), right-sidebar
+                    // toggle (24), "+" and spacing (26), the minimum drag
+                    // target (100), and the exit-zoom button (24 + 8 spacing)
+                    // while shown.
                     SessionTabsView(
                         project: project,
-                        maxStripWidth: max(0, geo.size.width - leadingInset - 74 - (manager.isPaneZoomed ? 32 : 0))
+                        maxStripWidth: max(
+                            0,
+                            geo.size.width - leadingInset - hiddenLeftSidebarControlWidth
+                                - 74 - minimumWindowDragWidth
+                                - (manager.isPaneZoomed ? 32 : 0)
+                        )
                     )
                 }
                 WindowDragArea()
-                    .frame(maxWidth: .infinity)
+                    .frame(minWidth: minimumWindowDragWidth, maxWidth: .infinity)
                 // Zoom indicator: only visible while the selected tab has a
                 // zoomed pane. Styled like the sidebar toggle next to it, with
                 // the accent tint marking the active state. Click restores the
